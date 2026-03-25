@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bash \"C:\\\\Users\\\\Tintt\\\\.claude\\\\plugins\\\\cache\\\\claude-plugins-official\\\\superpowers\\\\5.0.5\\\\scripts\\\\start-server.sh\" --project-dir \"C:\\\\Users\\\\Tintt\\\\Desktop\\\\Loveart\")",
+      "Bash(ls:*)",
+      "Bash(npx:*)",
+      "Bash(cp -r /c/Users/Tintt/Desktop/Loveart/loveart-temp/app /c/Users/Tintt/Desktop/Loveart/)",
+      "Bash(cp -r /c/Users/Tintt/Desktop/Loveart/loveart-temp/public /c/Users/Tintt/Desktop/Loveart/)",
+      "Bash(cp:*)",
+      "Bash(npm install:*)",
+      "Bash(printf '\\\\n\\\\n\\\\n\\\\n\\\\n')"
+    ]
+  }
+}
