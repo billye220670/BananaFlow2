@@ -92,12 +92,12 @@ export function TextInput({ onFocus }: { onFocus?: () => void }) {
       />
       <TooltipProvider>
         <Tooltip open={hasPendingUploads && !isLoading ? undefined : false}>
-          <TooltipTrigger>
+          <TooltipTrigger render={<span className="shrink-0 inline-flex" />}>
             <Button
               size="icon"
               onClick={handleSend}
               disabled={isBlocked || !value.trim()}
-              className="shrink-0 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40"
+              className="rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40"
             >
               {isLoading ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
