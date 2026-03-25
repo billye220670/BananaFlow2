@@ -8,7 +8,10 @@
       "Bash(cp -r /c/Users/Tintt/Desktop/Loveart/loveart-temp/public /c/Users/Tintt/Desktop/Loveart/)",
       "Bash(cp:*)",
       "Bash(npm install:*)",
-      "Bash(printf '\\\\n\\\\n\\\\n\\\\n\\\\n')"
+      "Bash(printf '\\\\n\\\\n\\\\n\\\\n\\\\n')",
+      "Bash(npm run:*)",
+      "Bash(git -C /c/Users/Tintt/Desktop/Loveart add -A)",
+      "Bash(git -C /c/Users/Tintt/Desktop/Loveart status --short)"
     ]
   }
 }
