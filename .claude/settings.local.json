@@ -11,7 +11,12 @@
       "Bash(printf '\\\\n\\\\n\\\\n\\\\n\\\\n')",
       "Bash(npm run:*)",
       "Bash(git -C /c/Users/Tintt/Desktop/Loveart add -A)",
-      "Bash(git -C /c/Users/Tintt/Desktop/Loveart status --short)"
+      "Bash(git -C /c/Users/Tintt/Desktop/Loveart status --short)",
+      "Bash(git:*)",
+      "Bash(grep '\"\"nanoid\"\"' package.json)",
+      "Bash(node -e \":*)",
+      "WebFetch(domain:www.npmjs.com)",
+      "WebSearch"
     ]
   }
 }

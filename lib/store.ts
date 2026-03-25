@@ -1,12 +1,9 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { StoredRef, Message } from "@/lib/types"
+import type { CanvasItem, StoredRef, Message } from "@/lib/types"
 
 const MAX_HISTORY = 50
 
-/** Lazily-evaluated JSON storage so localStorage is accessed at call-time,
- *  not at module-init time.  This makes the store safe in SSR and test
- *  environments where localStorage may not be ready when the module loads. */
 const safeStorage = {
   getItem: (key: string): string | null => {
     try { return localStorage.getItem(key) } catch { return null }
@@ -20,7 +17,9 @@ const safeStorage = {
 }
 
 interface Actions {
-  setCanvasImage: (url: string | null) => void
+  addCanvasItem: (item: CanvasItem) => void
+  updateCanvasItem: (id: string, patch: Partial<CanvasItem>) => void
+  removeCanvasItem: (id: string) => void
   clearCanvas: () => void
   setEditingMode: (active: boolean, target: StoredRef | null) => void
   updateEditingTarget: (patch: Partial<StoredRef>) => void
@@ -36,7 +35,7 @@ interface PersistedSlice {
 }
 
 interface SessionSlice {
-  canvasImage: string | null
+  canvasItems: CanvasItem[]
   referenceImages: StoredRef[]
   isEditingMode: boolean
   editingTarget: StoredRef | null
@@ -49,18 +48,27 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       // persisted
       chatHistory: [],
 
-      // session-only (excluded from persist below)
-      canvasImage: null,
+      // session-only
+      canvasItems: [],
       referenceImages: [],
       isEditingMode: false,
       editingTarget: null,
       isLoading: false,
 
-      // actions
-      setCanvasImage: (url) => set({ canvasImage: url }),
+      // canvas actions
+      addCanvasItem: (item) =>
+        set((s) => ({ canvasItems: [...s.canvasItems, item] })),
+
+      updateCanvasItem: (id, patch) =>
+        set((s) => ({
+          canvasItems: s.canvasItems.map((i) => i.id === id ? { ...i, ...patch } : i),
+        })),
+
+      removeCanvasItem: (id) =>
+        set((s) => ({ canvasItems: s.canvasItems.filter((i) => i.id !== id) })),
 
       clearCanvas: () =>
-        set({ canvasImage: null, isEditingMode: false, editingTarget: null }),
+        set({ canvasItems: [], isEditingMode: false, editingTarget: null }),
 
       setEditingMode: (active, target) =>
         set({ isEditingMode: active, editingTarget: target }),

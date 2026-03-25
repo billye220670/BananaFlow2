@@ -5,7 +5,7 @@ import { act } from "@testing-library/react"
 // Reset store between tests
 beforeEach(() => {
   useAppStore.setState({
-    canvasImage: null,
+    canvasItems: [],
     chatHistory: [],
     referenceImages: [],
     isEditingMode: false,
@@ -15,19 +15,30 @@ beforeEach(() => {
 })
 
 describe("store — canvas actions", () => {
-  it("setCanvasImage updates canvasImage", () => {
-    act(() => useAppStore.getState().setCanvasImage("https://example.com/img.png"))
-    expect(useAppStore.getState().canvasImage).toBe("https://example.com/img.png")
+  it("addCanvasItem appends an item", () => {
+    const item = { id: "1", url: "https://x.png", falUrl: "https://x.png", x: 0, y: 0, width: 400, height: 400, uploading: false }
+    act(() => useAppStore.getState().addCanvasItem(item))
+    expect(useAppStore.getState().canvasItems).toHaveLength(1)
+  })
+
+  it("removeCanvasItem removes by id", () => {
+    act(() => {
+      useAppStore.getState().addCanvasItem({ id: "1", url: "https://a.png", falUrl: null, x: 0, y: 0, width: 0, height: 0, uploading: true })
+      useAppStore.getState().addCanvasItem({ id: "2", url: "https://b.png", falUrl: null, x: 0, y: 0, width: 0, height: 0, uploading: true })
+      useAppStore.getState().removeCanvasItem("1")
+    })
+    expect(useAppStore.getState().canvasItems).toHaveLength(1)
+    expect(useAppStore.getState().canvasItems[0].id).toBe("2")
   })
 
   it("clearCanvas resets editing state", () => {
     act(() => {
-      useAppStore.getState().setCanvasImage("https://example.com/img.png")
+      useAppStore.getState().addCanvasItem({ id: "1", url: "https://x.png", falUrl: "https://x.png", x: 0, y: 0, width: 400, height: 400, uploading: false })
       useAppStore.getState().setEditingMode(true, { id: "1", localUrl: "blob:x", falUrl: "https://x", name: "x.png", uploading: false })
       useAppStore.getState().clearCanvas()
     })
     const state = useAppStore.getState()
-    expect(state.canvasImage).toBeNull()
+    expect(state.canvasItems).toHaveLength(0)
     expect(state.isEditingMode).toBe(false)
     expect(state.editingTarget).toBeNull()
   })

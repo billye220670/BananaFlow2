@@ -14,8 +14,20 @@ export interface Message {
   timestamp: number
 }
 
+export interface CanvasItem {
+  id: string
+  url: string           // display URL (blob or FAL CDN)
+  falUrl: string | null // FAL CDN URL; null until upload completes
+  x: number
+  y: number
+  width: number         // 0 = auto-size on first image load
+  height: number
+  uploading: boolean
+  placeholder?: boolean // true while AI is generating
+}
+
 export interface AppState {
-  canvasImage: string | null
+  canvasItems: CanvasItem[]
   chatHistory: Message[]
   referenceImages: StoredRef[]
   isEditingMode: boolean

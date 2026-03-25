@@ -16,8 +16,11 @@ export function TextInput({ onFocus }: { onFocus?: () => void }) {
     isEditingMode,
     editingTarget,
     referenceImages,
+    canvasItems,
     setLoading,
-    setCanvasImage,
+    addCanvasItem,
+    updateCanvasItem,
+    removeCanvasItem,
     appendMessage,
   } = useAppStore()
 
@@ -33,9 +36,30 @@ export function TextInput({ onFocus }: { onFocus?: () => void }) {
     if (!prompt || isBlocked) return
     setValue("")
 
-    const userMsg = { id: nanoid(), role: "user" as const, content: prompt, timestamp: Date.now() }
-    appendMessage(userMsg)
+    appendMessage({ id: nanoid(), role: "user" as const, content: prompt, timestamp: Date.now() })
     setLoading(true)
+
+    // Determine placeholder position: next to editing target, or cascaded
+    const editingItem = editingTarget ? canvasItems.find((i) => i.id === editingTarget.id) : null
+    const phW = editingItem ? editingItem.width || 400 : 400
+    const phH = editingItem ? editingItem.height || 400 : 400
+    const phX = editingItem
+      ? editingItem.x + (editingItem.width || 400) + 24
+      : 40 + (canvasItems.filter((i) => !i.placeholder).length % 10) * 30
+    const phY = editingItem ? editingItem.y : 40 + (canvasItems.filter((i) => !i.placeholder).length % 10) * 30
+    const phId = nanoid()
+
+    addCanvasItem({
+      id: phId,
+      url: "",
+      falUrl: null,
+      x: phX,
+      y: phY,
+      width: phW,
+      height: phH,
+      uploading: false,
+      placeholder: true,
+    })
 
     try {
       const refUrls = referenceImages.map((r) => r.falUrl!).filter(Boolean)
@@ -47,7 +71,7 @@ export function TextInput({ onFocus }: { onFocus?: () => void }) {
         resultUrl = await generateImage({ prompt, referenceUrls: refUrls })
       }
 
-      setCanvasImage(resultUrl)
+      updateCanvasItem(phId, { url: resultUrl, falUrl: resultUrl, placeholder: false })
       appendMessage({
         id: nanoid(),
         role: "assistant",
@@ -56,12 +80,13 @@ export function TextInput({ onFocus }: { onFocus?: () => void }) {
         timestamp: Date.now(),
       })
     } catch (err) {
+      removeCanvasItem(phId)
       const isNetwork = err instanceof TypeError && err.message.includes("fetch")
       toast.error(isNetwork ? "网络连接失败，请检查网络" : "生成失败，请重试")
     } finally {
       setLoading(false)
     }
-  }, [value, isBlocked, isEditingMode, editingTarget, referenceImages, appendMessage, setLoading, setCanvasImage])
+  }, [value, isBlocked, isEditingMode, editingTarget, referenceImages, canvasItems, appendMessage, setLoading, addCanvasItem, updateCanvasItem, removeCanvasItem])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -91,7 +116,7 @@ export function TextInput({ onFocus }: { onFocus?: () => void }) {
         }}
       />
       <TooltipProvider>
-        <Tooltip open={hasPendingUploads && !isLoading ? undefined : false}>
+        <Tooltip open={!!hasPendingUploads && !isLoading}>
           <TooltipTrigger render={<span className="shrink-0 inline-flex" />}>
             <Button
               size="icon"
