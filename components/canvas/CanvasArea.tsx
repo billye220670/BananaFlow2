@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Download, X, ImageIcon } from "lucide-react"
 import { nanoid } from "nanoid"
 import type { CanvasItem } from "@/lib/types"
+import { InlineEditPanel } from "./InlineEditPanel"
 
 // ── Shimmer placeholder ─────────────────────────────────────────────────────
 
@@ -72,10 +73,14 @@ function CanvasItemNode({
   item,
   isSelected,
   onSelect,
+  onDragMove,
+  onDragEnd,
 }: {
   item: CanvasItem
   isSelected: boolean
   onSelect: () => void
+  onDragMove?: (x: number, y: number) => void
+  onDragEnd?: () => void
 }) {
   const [img, setImg] = useState<HTMLImageElement | null>(null)
   const { updateCanvasItem } = useAppStore()
@@ -122,9 +127,15 @@ function CanvasItemNode({
         draggable
         onClick={onSelect}
         onTap={onSelect}
-        onDragEnd={(e) =>
+        onDragMove={(e) => {
+          if (onDragMove) {
+            onDragMove(e.target.x(), e.target.y())
+          }
+        }}
+        onDragEnd={(e) => {
           updateCanvasItem(item.id, { x: e.target.x(), y: e.target.y() })
-        }
+          if (onDragEnd) onDragEnd()
+        }}
         stroke={isSelected ? "#8b5cf6" : undefined}
         strokeWidth={isSelected ? 2 : 0}
       />
@@ -178,9 +189,16 @@ export function CanvasArea() {
   const stageRef = useRef<Konva.Stage>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
 
+  // Background grid follows canvas pan/zoom
+  const [bgOffset, setBgOffset] = useState({ x: 0, y: 0 })
+  const [bgScale, setBgScale] = useState(1)
+
   // Middle-mouse pan state
   const midPanRef = useRef(false)
   const midLastRef = useRef({ x: 0, y: 0 })
+
+  // Drag item position (only used during drag)
+  const [dragItemPos, setDragItemPos] = useState<{ x: number; y: number } | null>(null)
 
   // Sync selection when editing target cleared externally
   useEffect(() => {
@@ -214,12 +232,12 @@ export function CanvasArea() {
       if (!midPanRef.current) return
       const stage = stageRef.current
       if (!stage) return
-      stage.position({
-        x: stage.x() + (e.clientX - midLastRef.current.x),
-        y: stage.y() + (e.clientY - midLastRef.current.y),
-      })
+      const newX = stage.x() + (e.clientX - midLastRef.current.x)
+      const newY = stage.y() + (e.clientY - midLastRef.current.y)
+      stage.position({ x: newX, y: newY })
       stage.batchDraw()
       midLastRef.current = { x: e.clientX, y: e.clientY }
+      setBgOffset({ x: newX, y: newY })
     }
     const onUp = (e: MouseEvent) => {
       if (e.button === 1) midPanRef.current = false
@@ -247,7 +265,18 @@ export function CanvasArea() {
     const to = { x: (pointer.x - stage.x()) / old, y: (pointer.y - stage.y()) / old }
     const next = e.evt.deltaY < 0 ? Math.min(old * BY, 10) : Math.max(old / BY, 0.05)
     stage.scale({ x: next, y: next })
-    stage.position({ x: pointer.x - to.x * next, y: pointer.y - to.y * next })
+    const newPos = { x: pointer.x - to.x * next, y: pointer.y - to.y * next }
+    stage.position(newPos)
+    setBgOffset(newPos)
+    setBgScale(next)
+  }, [])
+
+  // Sync background when Stage is dragged (left-click drag)
+  const handleStageDrag = useCallback(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const pos = { x: stage.x(), y: stage.y() }
+    setBgOffset(pos)
   }, [])
 
   // Block Konva drag when middle button is held
@@ -360,8 +389,19 @@ export function CanvasArea() {
 
   const hasImages = canvasItems.some((i) => !i.placeholder)
 
+  // Background grid dynamic style (follows canvas pan/zoom)
+  const BASE_GRID_SIZE = 22
+  const gridSize = BASE_GRID_SIZE * bgScale
+  const bgStyle = {
+    backgroundPosition: `${bgOffset.x}px ${bgOffset.y}px`,
+    backgroundSize: `${gridSize}px ${gridSize}px`,
+  }
+
   return (
-    <div className="relative flex flex-col h-full bg-zinc-950 border-r border-zinc-800">
+    <div
+      className="relative flex flex-col h-full bg-zinc-950 border-r border-zinc-800 canvas-dot-grid"
+      style={bgStyle}
+    >
       <div
         ref={containerRef}
         className={`flex-1 min-h-0 transition-shadow ${isDraggingFile ? "ring-2 ring-violet-500 ring-inset" : ""}`}
@@ -377,6 +417,7 @@ export function CanvasArea() {
             height={size.height}
             draggable
             onDragStart={handleDragStart}
+            onDragMove={handleStageDrag}
             onWheel={handleWheel}
             onClick={handleStageClick}
             onTap={handleStageTap}
@@ -392,6 +433,8 @@ export function CanvasArea() {
                     item={item}
                     isSelected={selectedId === item.id}
                     onSelect={() => handleItemSelect(item)}
+                    onDragMove={selectedId === item.id ? (x, y) => setDragItemPos({ x, y }) : undefined}
+                    onDragEnd={selectedId === item.id ? () => setDragItemPos(null) : undefined}
                   />
                 )
               )}
@@ -402,9 +445,43 @@ export function CanvasArea() {
         {!hasImages && canvasItems.length === 0 && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-600 pointer-events-none">
             <ImageIcon className="w-16 h-16" />
-            <p className="text-sm">拖入图片开始编辑，或在右侧输入创作指令</p>
+            <p className="text-sm">拖入图片开始创作</p>
           </div>
         )}
+
+        {/* Canvas-synced overlay for inline edit panel */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div
+            style={{
+              position: 'absolute',
+              transform: `translate(${bgOffset.x}px, ${bgOffset.y}px) scale(${bgScale})`,
+              transformOrigin: '0 0',
+            }}
+          >
+            {selectedId && (() => {
+              const selectedItem = canvasItems.find(i => i.id === selectedId)
+              if (!selectedItem || selectedItem.placeholder) return null
+              const posX = dragItemPos ? dragItemPos.x : selectedItem.x
+              const posY = dragItemPos ? dragItemPos.y : selectedItem.y
+              const panelW = Math.max(selectedItem.width || 280, 280)
+              return (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: posX,
+                    top: posY + (selectedItem.height || 0) + 12,
+                    width: panelW,
+                    pointerEvents: 'auto',
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <InlineEditPanel item={selectedItem} visible={true} />
+                </div>
+              )
+            })()}
+          </div>
+        </div>
       </div>
 
       {/* Bottom controls */}

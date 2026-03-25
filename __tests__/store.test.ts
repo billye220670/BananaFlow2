@@ -7,7 +7,6 @@ beforeEach(() => {
   useAppStore.setState({
     canvasItems: [],
     chatHistory: [],
-    referenceImages: [],
     isEditingMode: false,
     editingTarget: null,
     isLoading: false,
@@ -44,31 +43,52 @@ describe("store — canvas actions", () => {
   })
 })
 
-describe("store — reference images", () => {
-  it("addReferenceImage appends to referenceImages", () => {
-    const ref = { id: "1", localUrl: "blob:x", falUrl: null, name: "a.png", uploading: true }
-    act(() => useAppStore.getState().addReferenceImage(ref))
-    expect(useAppStore.getState().referenceImages).toHaveLength(1)
+describe("store — per-item reference images", () => {
+  it("addItemReference appends ref to item.referenceImages", () => {
+    act(() => {
+      useAppStore.getState().addCanvasItem({ id: "item1", url: "https://x.png", falUrl: "https://x.png", x: 0, y: 0, width: 400, height: 400, uploading: false })
+      useAppStore.getState().addItemReference("item1", { id: "ref1", localUrl: "blob:x", falUrl: null, name: "a.png", uploading: true })
+    })
+    const item = useAppStore.getState().canvasItems[0]
+    expect(item.referenceImages).toHaveLength(1)
+    expect(item.referenceImages![0].id).toBe("ref1")
   })
 
-  it("removeReferenceImage removes by id", () => {
+  it("removeItemReference removes ref by id", () => {
     act(() => {
-      useAppStore.getState().addReferenceImage({ id: "1", localUrl: "blob:x", falUrl: null, name: "a.png", uploading: true })
-      useAppStore.getState().addReferenceImage({ id: "2", localUrl: "blob:y", falUrl: null, name: "b.png", uploading: true })
-      useAppStore.getState().removeReferenceImage("1")
+      useAppStore.getState().addCanvasItem({ id: "item1", url: "https://x.png", falUrl: "https://x.png", x: 0, y: 0, width: 400, height: 400, uploading: false })
+      useAppStore.getState().addItemReference("item1", { id: "ref1", localUrl: "blob:a", falUrl: null, name: "a.png", uploading: true })
+      useAppStore.getState().addItemReference("item1", { id: "ref2", localUrl: "blob:b", falUrl: null, name: "b.png", uploading: true })
+      useAppStore.getState().removeItemReference("item1", "ref1")
     })
-    expect(useAppStore.getState().referenceImages).toHaveLength(1)
-    expect(useAppStore.getState().referenceImages[0].id).toBe("2")
+    const item = useAppStore.getState().canvasItems[0]
+    expect(item.referenceImages).toHaveLength(1)
+    expect(item.referenceImages![0].id).toBe("ref2")
   })
 
-  it("updateReferenceImage sets falUrl and uploading=false", () => {
+  it("updateItemReference sets falUrl and uploading=false", () => {
     act(() => {
-      useAppStore.getState().addReferenceImage({ id: "1", localUrl: "blob:x", falUrl: null, name: "a.png", uploading: true })
-      useAppStore.getState().updateReferenceImage("1", { falUrl: "https://fal.media/x.png", uploading: false })
+      useAppStore.getState().addCanvasItem({ id: "item1", url: "https://x.png", falUrl: "https://x.png", x: 0, y: 0, width: 400, height: 400, uploading: false })
+      useAppStore.getState().addItemReference("item1", { id: "ref1", localUrl: "blob:x", falUrl: null, name: "a.png", uploading: true })
+      useAppStore.getState().updateItemReference("item1", "ref1", { falUrl: "https://fal.media/x.png", uploading: false })
     })
-    const ref = useAppStore.getState().referenceImages[0]
+    const ref = useAppStore.getState().canvasItems[0].referenceImages![0]
     expect(ref.falUrl).toBe("https://fal.media/x.png")
     expect(ref.uploading).toBe(false)
+  })
+
+  it("reorderItemReferences reorders refs by id", () => {
+    act(() => {
+      useAppStore.getState().addCanvasItem({ id: "item1", url: "https://x.png", falUrl: "https://x.png", x: 0, y: 0, width: 400, height: 400, uploading: false })
+      useAppStore.getState().addItemReference("item1", { id: "ref1", localUrl: "blob:a", falUrl: null, name: "a.png", uploading: false })
+      useAppStore.getState().addItemReference("item1", { id: "ref2", localUrl: "blob:b", falUrl: null, name: "b.png", uploading: false })
+      useAppStore.getState().addItemReference("item1", { id: "ref3", localUrl: "blob:c", falUrl: null, name: "c.png", uploading: false })
+      useAppStore.getState().reorderItemReferences("item1", ["ref3", "ref1", "ref2"])
+    })
+    const refs = useAppStore.getState().canvasItems[0].referenceImages!
+    expect(refs[0].id).toBe("ref3")
+    expect(refs[1].id).toBe("ref1")
+    expect(refs[2].id).toBe("ref2")
   })
 })
 

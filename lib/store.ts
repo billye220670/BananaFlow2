@@ -23,9 +23,11 @@ interface Actions {
   clearCanvas: () => void
   setEditingMode: (active: boolean, target: StoredRef | null) => void
   updateEditingTarget: (patch: Partial<StoredRef>) => void
-  addReferenceImage: (ref: StoredRef) => void
-  removeReferenceImage: (id: string) => void
-  updateReferenceImage: (id: string, patch: Partial<StoredRef>) => void
+  // per-item reference image actions
+  addItemReference: (itemId: string, ref: StoredRef) => void
+  removeItemReference: (itemId: string, refId: string) => void
+  updateItemReference: (itemId: string, refId: string, patch: Partial<StoredRef>) => void
+  reorderItemReferences: (itemId: string, newOrder: string[]) => void
   appendMessage: (msg: Message) => void
   setLoading: (loading: boolean) => void
 }
@@ -36,7 +38,6 @@ interface PersistedSlice {
 
 interface SessionSlice {
   canvasItems: CanvasItem[]
-  referenceImages: StoredRef[]
   isEditingMode: boolean
   editingTarget: StoredRef | null
   isLoading: boolean
@@ -50,7 +51,6 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
 
       // session-only
       canvasItems: [],
-      referenceImages: [],
       isEditingMode: false,
       editingTarget: null,
       isLoading: false,
@@ -65,10 +65,29 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
         })),
 
       removeCanvasItem: (id) =>
-        set((s) => ({ canvasItems: s.canvasItems.filter((i) => i.id !== id) })),
+        set((s) => {
+          const item = s.canvasItems.find((i) => i.id === id)
+          // Revoke Object URLs for all reference images before removing
+          if (item?.referenceImages) {
+            item.referenceImages.forEach((ref) => {
+              URL.revokeObjectURL(ref.localUrl)
+            })
+          }
+          return { canvasItems: s.canvasItems.filter((i) => i.id !== id) }
+        }),
 
       clearCanvas: () =>
-        set({ canvasItems: [], isEditingMode: false, editingTarget: null }),
+        set((s) => {
+          // Revoke Object URLs for all reference images in all canvas items
+          s.canvasItems.forEach((item) => {
+            if (item.referenceImages) {
+              item.referenceImages.forEach((ref) => {
+                URL.revokeObjectURL(ref.localUrl)
+              })
+            }
+          })
+          return { canvasItems: [], isEditingMode: false, editingTarget: null }
+        }),
 
       setEditingMode: (active, target) =>
         set({ isEditingMode: active, editingTarget: target }),
@@ -78,17 +97,55 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
           s.editingTarget ? { editingTarget: { ...s.editingTarget, ...patch } } : {}
         ),
 
-      addReferenceImage: (ref) =>
-        set((s) => ({ referenceImages: [...s.referenceImages, ref] })),
-
-      removeReferenceImage: (id) =>
-        set((s) => ({ referenceImages: s.referenceImages.filter((r) => r.id !== id) })),
-
-      updateReferenceImage: (id, patch) =>
+      // per-item reference image actions
+      addItemReference: (itemId, ref) =>
         set((s) => ({
-          referenceImages: s.referenceImages.map((r) =>
-            r.id === id ? { ...r, ...patch } : r
+          canvasItems: s.canvasItems.map((item) =>
+            item.id === itemId
+              ? { ...item, referenceImages: [...(item.referenceImages || []), ref] }
+              : item
           ),
+        })),
+
+      removeItemReference: (itemId, refId) =>
+        set((s) => ({
+          canvasItems: s.canvasItems.map((item) => {
+            if (item.id !== itemId) return item
+            const refToRemove = item.referenceImages?.find((r) => r.id === refId)
+            if (refToRemove) {
+              URL.revokeObjectURL(refToRemove.localUrl)
+            }
+            return {
+              ...item,
+              referenceImages: item.referenceImages?.filter((r) => r.id !== refId) || [],
+            }
+          }),
+        })),
+
+      updateItemReference: (itemId, refId, patch) =>
+        set((s) => ({
+          canvasItems: s.canvasItems.map((item) =>
+            item.id === itemId
+              ? {
+                  ...item,
+                  referenceImages: item.referenceImages?.map((r) =>
+                    r.id === refId ? { ...r, ...patch } : r
+                  ),
+                }
+              : item
+          ),
+        })),
+
+      reorderItemReferences: (itemId, newOrder) =>
+        set((s) => ({
+          canvasItems: s.canvasItems.map((item) => {
+            if (item.id !== itemId || !item.referenceImages) return item
+            const refMap = new Map(item.referenceImages.map((r) => [r.id, r]))
+            const reordered = newOrder
+              .map((id) => refMap.get(id))
+              .filter((r): r is StoredRef => r !== undefined)
+            return { ...item, referenceImages: reordered }
+          }),
         })),
 
       appendMessage: (msg) =>

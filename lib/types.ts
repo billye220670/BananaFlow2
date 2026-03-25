@@ -24,12 +24,12 @@ export interface CanvasItem {
   height: number
   uploading: boolean
   placeholder?: boolean // true while AI is generating
+  referenceImages?: StoredRef[] // per-item reference images
 }
 
 export interface AppState {
   canvasItems: CanvasItem[]
   chatHistory: Message[]
-  referenceImages: StoredRef[]
   isEditingMode: boolean
   editingTarget: StoredRef | null
   isLoading: boolean
