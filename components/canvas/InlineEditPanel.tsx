@@ -1,26 +1,25 @@
 "use client"
 
 import { useState, useRef, useEffect, useCallback } from "react"
-import { useAppStore } from "@/lib/store"
+import { useAppStore, canvasItemIdToShapeId } from "@/lib/store"
 import { validateFile } from "@/lib/validate"
 import { uploadFile, editImage, generateImage } from "@/lib/fal"
 import { toast } from "sonner"
 import { ImagePlus, X, Loader2 } from "lucide-react"
 import { nanoid } from "nanoid"
-import type { CanvasItem, StoredRef } from "@/lib/types"
+import type { StoredRef } from "@/lib/types"
 
 const MAX_REFS = 6
 
-interface InlineEditPanelProps {
-  item: CanvasItem
-  visible: boolean
+interface PanelPosition {
+  x: number
+  y: number
+  width: number
 }
 
-export function InlineEditPanel({
-  item,
-  visible,
-}: InlineEditPanelProps) {
+export function InlineEditPanel() {
   const {
+    canvasItems,
     addItemReference,
     removeItemReference,
     updateItemReference,
@@ -31,14 +30,25 @@ export function InlineEditPanel({
     appendMessage,
     setLoading,
     isLoading,
+    editor,
+    selectedShapeIds,
   } = useAppStore()
 
   const [value, setValue] = useState("")
   const [dragRefId, setDragRefId] = useState<string | null>(null)
+  const [position, setPosition] = useState<PanelPosition | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const refs = item.referenceImages || []
+  // Get selected item from store
+  const selectedItem = selectedShapeIds.length === 1
+    ? canvasItems.find(i => i.id === selectedShapeIds[0])
+    : null
+
+  // Determine if panel should be visible
+  const isVisible = selectedItem && !selectedItem.placeholder && !selectedItem.uploading
+
+  const refs = selectedItem?.referenceImages || []
 
   // Auto-resize textarea
   useEffect(() => {
@@ -50,9 +60,57 @@ export function InlineEditPanel({
     }
   }, [value])
 
+  // Calculate panel position based on selected shape bounds
+  const updatePosition = useCallback(() => {
+    if (!editor || !selectedItem) {
+      setPosition(null)
+      return
+    }
+
+    const shapeId = canvasItemIdToShapeId(selectedItem.id)
+    const bounds = editor.getShapePageBounds(shapeId)
+    if (!bounds) {
+      setPosition(null)
+      return
+    }
+
+    // Convert bottom-left corner of shape to screen coordinates
+    const screenPoint = editor.pageToScreen({ x: bounds.x, y: bounds.maxY })
+    const zoomLevel = editor.getZoomLevel()
+
+    setPosition({
+      x: screenPoint.x,
+      y: screenPoint.y,
+      width: bounds.w * zoomLevel,
+    })
+  }, [editor, selectedItem])
+
+  // Update position when editor camera changes (zoom/pan)
+  useEffect(() => {
+    if (!editor) return
+
+    // Initial position calculation
+    updatePosition()
+
+    // Listen for camera changes to update position
+    const unsubscribe = editor.store.listen(() => {
+      updatePosition()
+    }, { source: 'all', scope: 'document' })
+
+    return () => {
+      unsubscribe()
+    }
+  }, [editor, updatePosition])
+
+  // Also update when selected item changes
+  useEffect(() => {
+    updatePosition()
+  }, [selectedItem, updatePosition])
+
   // Process file upload
   const processFile = useCallback(
     async (file: File) => {
+      if (!selectedItem) return
       if (refs.length >= MAX_REFS) {
         toast.error("最多 6 张参考图")
         return
@@ -65,7 +123,7 @@ export function InlineEditPanel({
 
       const id = nanoid()
       const localUrl = URL.createObjectURL(file)
-      addItemReference(item.id, {
+      addItemReference(selectedItem.id, {
         id,
         localUrl,
         falUrl: null,
@@ -75,14 +133,14 @@ export function InlineEditPanel({
 
       try {
         const falUrl = await uploadFile(file)
-        updateItemReference(item.id, id, { falUrl, uploading: false })
+        updateItemReference(selectedItem.id, id, { falUrl, uploading: false })
       } catch {
         toast.error("上传失败")
-        removeItemReference(item.id, id)
+        removeItemReference(selectedItem.id, id)
         URL.revokeObjectURL(localUrl)
       }
     },
-    [refs.length, item.id, addItemReference, updateItemReference, removeItemReference]
+    [refs.length, selectedItem, addItemReference, updateItemReference, removeItemReference]
   )
 
   // Handle file input change
@@ -96,6 +154,7 @@ export function InlineEditPanel({
 
   // Handle send
   const handleSend = async () => {
+    if (!selectedItem) return
     const prompt = value.trim()
     if (!prompt || isLoading) return
 
@@ -115,10 +174,10 @@ export function InlineEditPanel({
     setLoading(true)
 
     // Placeholder position: to the right of current image
-    const phW = item.width || 400
-    const phH = item.height || 400
-    const phX = item.x + (item.width || 400) + 24
-    const phY = item.y
+    const phW = selectedItem.width || 400
+    const phH = selectedItem.height || 400
+    const phX = selectedItem.x + (selectedItem.width || 400) + 24
+    const phY = selectedItem.y
     const phId = nanoid()
 
     addCanvasItem({
@@ -136,7 +195,7 @@ export function InlineEditPanel({
     try {
       // Image order: main image + reference images (in thumbnail order)
       const refUrls = refs.map((r) => r.falUrl!).filter(Boolean)
-      const targetUrl = item.falUrl ?? item.url
+      const targetUrl = selectedItem.falUrl ?? selectedItem.url
 
       let resultUrl: string
       if (targetUrl) {
@@ -189,6 +248,7 @@ export function InlineEditPanel({
 
   const handleRefDrop = (e: React.DragEvent, targetIndex: number) => {
     e.preventDefault()
+    if (!selectedItem) return
     const sourceId = e.dataTransfer.getData("application/x-ref-id")
     if (!sourceId || sourceId === refs[targetIndex]?.id) {
       setDragRefId(null)
@@ -206,7 +266,7 @@ export function InlineEditPanel({
     const newOrder = [...currentOrder]
     newOrder.splice(sourceIndex, 1)
     newOrder.splice(targetIndex, 0, sourceId)
-    reorderItemReferences(item.id, newOrder)
+    reorderItemReferences(selectedItem.id, newOrder)
     setDragRefId(null)
   }
 
@@ -232,13 +292,22 @@ export function InlineEditPanel({
     }
   }
 
+  // Don't render if no selected item or no position calculated
+  if (!isVisible || !position) {
+    return null
+  }
+
   return (
     <div
-      className={`transition-all duration-200 ease-out ${
-        visible
-          ? "opacity-100 translate-y-0"
-          : "opacity-0 translate-y-2 pointer-events-none"
-      }`}
+      className="fixed transition-all duration-200 ease-out opacity-100 translate-y-0 pointer-events-auto"
+      style={{
+        left: position.x,
+        top: position.y + 12,
+        width: Math.max(position.width, 280),
+        zIndex: 1000,
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
     >
       <div className="bg-zinc-800/90 backdrop-blur-sm rounded-xl p-2.5 border border-zinc-700/50 shadow-xl shadow-black/30">
         {/* Input row */}
@@ -295,7 +364,7 @@ export function InlineEditPanel({
                 )}
                 {/* Hover delete button */}
                 <button
-                  onClick={() => removeItemReference(item.id, ref.id)}
+                  onClick={() => selectedItem && removeItemReference(selectedItem.id, ref.id)}
                   className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-zinc-700 items-center justify-center hover:bg-red-600 transition-colors hidden group-hover:flex"
                 >
                   <X className="w-2.5 h-2.5 text-zinc-300" />

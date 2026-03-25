@@ -127,8 +127,13 @@
   }
 }
 
-/* Canvas dot grid background - similar to Figma */
+/* Canvas dot grid background - similar to Figma (no longer used with tldraw) */
 .canvas-dot-grid {
   background-image: radial-gradient(circle, rgba(255, 255, 255, 0.12) 1px, transparent 1px);
   background-size: 22px 22px;
+}
+
+/* tldraw container styles */
+.tl-container {
+  background-color: hsl(0 0% 3.9%) !important;
 }

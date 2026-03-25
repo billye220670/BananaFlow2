@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import type { CanvasItem, StoredRef, Message } from "@/lib/types"
+import type { Editor, TLShapeId } from "tldraw"
 
 const MAX_HISTORY = 50
 
@@ -30,6 +31,18 @@ interface Actions {
   reorderItemReferences: (itemId: string, newOrder: string[]) => void
   appendMessage: (msg: Message) => void
   setLoading: (loading: boolean) => void
+  // tldraw integration
+  setEditor: (editor: Editor | null) => void
+  setSelectedShapeIds: (ids: string[]) => void
+}
+
+// ID mapping helpers
+export function canvasItemIdToShapeId(itemId: string): TLShapeId {
+  return `shape:${itemId}` as TLShapeId
+}
+
+export function shapeIdToCanvasItemId(shapeId: TLShapeId): string {
+  return shapeId.replace('shape:', '')
 }
 
 interface PersistedSlice {
@@ -41,6 +54,9 @@ interface SessionSlice {
   isEditingMode: boolean
   editingTarget: StoredRef | null
   isLoading: boolean
+  // tldraw integration
+  editor: Editor | null
+  selectedShapeIds: string[]
 }
 
 export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
@@ -54,6 +70,9 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       isEditingMode: false,
       editingTarget: null,
       isLoading: false,
+      // tldraw integration
+      editor: null,
+      selectedShapeIds: [],
 
       // canvas actions
       addCanvasItem: (item) =>
@@ -155,6 +174,10 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
         }),
 
       setLoading: (loading) => set({ isLoading: loading }),
+    
+      // tldraw integration
+      setEditor: (editor) => set({ editor }),
+      setSelectedShapeIds: (ids) => set({ selectedShapeIds: ids }),
     }),
     {
       name: "lovart-storage",

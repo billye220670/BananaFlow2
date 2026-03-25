@@ -1,9 +1,9 @@
 "use client"
 
-import { useEffect, useRef, useState, useCallback } from "react"
-import { Stage, Layer, Image as KonvaImage, Rect, Transformer } from "react-konva"
-import Konva from "konva"
-import { useAppStore } from "@/lib/store"
+import { useEffect, useRef, useCallback } from "react"
+import { Tldraw, Editor, AssetRecordType, TLShapeId, TLStoreEventInfo } from "tldraw"
+import "tldraw/tldraw.css"
+import { useAppStore, canvasItemIdToShapeId, shapeIdToCanvasItemId } from "@/lib/store"
 import { validateFile } from "@/lib/validate"
 import { uploadFile } from "@/lib/fal"
 import { toast } from "sonner"
@@ -13,160 +13,59 @@ import { nanoid } from "nanoid"
 import type { CanvasItem } from "@/lib/types"
 import { InlineEditPanel } from "./InlineEditPanel"
 
-// ── Shimmer placeholder ─────────────────────────────────────────────────────
-
-function PlaceholderNode({ item }: { item: CanvasItem }) {
-  const rectRef = useRef<Konva.Rect>(null)
-  const w = item.width || 400
-  const h = item.height || 400
-
-  useEffect(() => {
-    const rect = rectRef.current
-    if (!rect) return
-
-    // Gradient spans 3× rect width; its bright centre sweeps from -0.5w → 1.5w
-    // so the band enters from the left and exits to the right over one full cycle.
-    const gradW = w * 3
-    let progress = 0
-    let rafId: number
-
-    const tick = () => {
-      progress = (progress + 0.01) % 1          // ~1.7 s per sweep at 60 fps
-      const cx = -0.5 * w + progress * 2 * w    // bright centre in canvas coords
-      rect.fillLinearGradientStartPoint({ x: cx - gradW / 2, y: 0 })
-      rect.fillLinearGradientEndPoint({   x: cx + gradW / 2, y: 0 })
-      rect.fillLinearGradientColorStops([
-        0,    "#27272a",
-        0.40, "#27272a",
-        0.45, "#3f3f46",
-        0.50, "#71717a",
-        0.55, "#3f3f46",
-        0.60, "#27272a",
-        1,    "#27272a",
-      ])
-      rect.getLayer()?.batchDraw()
-      rafId = requestAnimationFrame(tick)
-    }
-
-    rafId = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafId)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w])
-
-  return (
-    <Rect
-      ref={rectRef}
-      x={item.x}
-      y={item.y}
-      width={w}
-      height={h}
-      fill="#27272a"
-      cornerRadius={8}
-      listening={false}
-    />
-  )
-}
-
-// ── Image node with transformer ─────────────────────────────────────────────
-
-function CanvasItemNode({
-  item,
-  isSelected,
-  onSelect,
-  onDragMove,
-  onDragEnd,
-}: {
-  item: CanvasItem
-  isSelected: boolean
-  onSelect: () => void
-  onDragMove?: (x: number, y: number) => void
-  onDragEnd?: () => void
-}) {
-  const [img, setImg] = useState<HTMLImageElement | null>(null)
-  const { updateCanvasItem } = useAppStore()
-  const imgRef = useRef<Konva.Image>(null)
-  const trRef = useRef<Konva.Transformer>(null)
-
-  useEffect(() => {
-    const image = new window.Image()
-    image.crossOrigin = "anonymous"
-    image.onload = () => {
-      setImg(image)
-      if (item.width === 0) {
-        const maxW = 480
-        const scale = Math.min(maxW / image.naturalWidth, maxW / image.naturalHeight, 1)
-        updateCanvasItem(item.id, {
-          width: Math.round(image.naturalWidth * scale),
-          height: Math.round(image.naturalHeight * scale),
-        })
+// Helper: Create tldraw asset + image shape from CanvasItem
+function createTldrawImageFromItem(editor: Editor, item: CanvasItem) {
+  if (item.placeholder) {
+    // Create geo shape as placeholder
+    const shapeId = canvasItemIdToShapeId(item.id)
+    editor.createShape({
+      id: shapeId,
+      type: 'geo',
+      x: item.x,
+      y: item.y,
+      props: {
+        w: item.width || 400,
+        h: item.height || 400,
+        geo: 'rectangle',
+        fill: 'solid',
+        color: 'grey',
       }
-    }
-    image.src = item.url
-    return () => { image.onload = null }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item.url])
+    })
+    return shapeId
+  }
 
-  useEffect(() => {
-    if (isSelected && imgRef.current && trRef.current) {
-      trRef.current.nodes([imgRef.current])
-      trRef.current.getLayer()?.batchDraw()
-    }
-  }, [isSelected, img])
+  // Create asset for image
+  const assetId = AssetRecordType.createId()
+  editor.createAssets([{
+    id: assetId,
+    type: 'image',
+    typeName: 'asset',
+    props: {
+      name: `canvas-${item.id}.png`,
+      src: item.url,
+      w: item.width || 400,
+      h: item.height || 400,
+      mimeType: 'image/png',
+      isAnimated: false,
+    },
+    meta: { canvasItemId: item.id },
+  }])
 
-  if (!img || item.width === 0) return null
+  // Create image shape
+  const shapeId = canvasItemIdToShapeId(item.id)
+  editor.createShape({
+    id: shapeId,
+    type: 'image',
+    x: item.x,
+    y: item.y,
+    props: {
+      assetId,
+      w: item.width || 400,
+      h: item.height || 400,
+    },
+  })
 
-  return (
-    <>
-      <KonvaImage
-        ref={imgRef}
-        image={img}
-        x={item.x}
-        y={item.y}
-        width={item.width}
-        height={item.height}
-        draggable
-        onClick={onSelect}
-        onTap={onSelect}
-        onDragMove={(e) => {
-          if (onDragMove) {
-            onDragMove(e.target.x(), e.target.y())
-          }
-        }}
-        onDragEnd={(e) => {
-          updateCanvasItem(item.id, { x: e.target.x(), y: e.target.y() })
-          if (onDragEnd) onDragEnd()
-        }}
-        stroke={isSelected ? "#8b5cf6" : undefined}
-        strokeWidth={isSelected ? 2 : 0}
-      />
-      {isSelected && (
-        <Transformer
-          ref={trRef}
-          borderStroke="#8b5cf6"
-          borderStrokeWidth={1.5}
-          anchorStroke="#8b5cf6"
-          anchorFill="#1c1917"
-          anchorSize={8}
-          rotateEnabled={false}
-          keepRatio
-          onTransformEnd={() => {
-            const node = imgRef.current
-            if (!node) return
-            const scaleX = node.scaleX()
-            const scaleY = node.scaleY()
-            node.scaleX(1)
-            node.scaleY(1)
-            updateCanvasItem(item.id, {
-              x: node.x(),
-              y: node.y(),
-              width: Math.max(40, node.width() * scaleX),
-              height: Math.max(40, node.height() * scaleY),
-            })
-          }}
-        />
-      )}
-    </>
-  )
+  return shapeId
 }
 
 // ── Main canvas ─────────────────────────────────────────────────────────────
@@ -178,184 +77,235 @@ export function CanvasArea() {
     editingTarget,
     setEditingMode,
     addCanvasItem,
+    updateCanvasItem,
     removeCanvasItem,
     clearCanvas,
+    editor,
+    setEditor,
+    selectedShapeIds,
+    setSelectedShapeIds,
   } = useAppStore()
 
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [isDraggingFile, setIsDraggingFile] = useState(false)
-  const dragCounterRef = useRef(0)
   const containerRef = useRef<HTMLDivElement>(null)
-  const stageRef = useRef<Konva.Stage>(null)
-  const [size, setSize] = useState({ width: 0, height: 0 })
+  const syncingRef = useRef(false)  // Prevent infinite sync loops
 
-  // Background grid follows canvas pan/zoom
-  const [bgOffset, setBgOffset] = useState({ x: 0, y: 0 })
-  const [bgScale, setBgScale] = useState(1)
+  // Track processed items to avoid re-creating shapes
+  const processedItemsRef = useRef<Set<string>>(new Set())
 
-  // Middle-mouse pan state
-  const midPanRef = useRef(false)
-  const midLastRef = useRef({ x: 0, y: 0 })
+  // Handle editor mount
+  const handleMount = useCallback((ed: Editor) => {
+    setEditor(ed)
 
-  // Drag item position (only used during drag)
-  const [dragItemPos, setDragItemPos] = useState<{ x: number; y: number } | null>(null)
-
-  // Sync selection when editing target cleared externally
-  useEffect(() => {
-    if (!editingTarget) setSelectedId(null)
-  }, [editingTarget])
-
-  // Responsive Stage size
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
-    const obs = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect
-      setSize({ width: Math.round(width), height: Math.round(height) })
+    // Initial sync: create shapes for existing canvasItems
+    const currentItems = useAppStore.getState().canvasItems
+    currentItems.forEach((item) => {
+      if (!item.uploading || item.placeholder) {
+        createTldrawImageFromItem(ed, item)
+        processedItemsRef.current.add(item.id)
+      }
     })
-    obs.observe(el)
-    return () => obs.disconnect()
-  }, [])
 
-  // Middle-mouse pan via native events (bypasses Konva entirely)
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
+    // Listen for tldraw store changes
+    const unsub = ed.store.listen((entry: TLStoreEventInfo) => {
+      if (syncingRef.current) return
 
-    const onDown = (e: MouseEvent) => {
-      if (e.button !== 1) return
-      e.preventDefault()
-      midPanRef.current = true
-      midLastRef.current = { x: e.clientX, y: e.clientY }
-    }
-    const onMove = (e: MouseEvent) => {
-      if (!midPanRef.current) return
-      const stage = stageRef.current
-      if (!stage) return
-      const newX = stage.x() + (e.clientX - midLastRef.current.x)
-      const newY = stage.y() + (e.clientY - midLastRef.current.y)
-      stage.position({ x: newX, y: newY })
-      stage.batchDraw()
-      midLastRef.current = { x: e.clientX, y: e.clientY }
-      setBgOffset({ x: newX, y: newY })
-    }
-    const onUp = (e: MouseEvent) => {
-      if (e.button === 1) midPanRef.current = false
-    }
+      const { changes } = entry
 
-    el.addEventListener("mousedown", onDown)
-    window.addEventListener("mousemove", onMove)
-    window.addEventListener("mouseup", onUp)
+      // Handle shape updates (position/size changes)
+      if (changes.updated) {
+        Object.values(changes.updated).forEach(([, after]) => {
+          if (after.typeName !== 'shape') return
+          const shape = after as { id: TLShapeId; x: number; y: number; props?: { w?: number; h?: number } }
+          const itemId = shapeIdToCanvasItemId(shape.id)
+          const existingItem = useAppStore.getState().canvasItems.find(i => i.id === itemId)
+          if (existingItem && !existingItem.placeholder) {
+            syncingRef.current = true
+            useAppStore.getState().updateCanvasItem(itemId, {
+              x: shape.x,
+              y: shape.y,
+              width: shape.props?.w ?? existingItem.width,
+              height: shape.props?.h ?? existingItem.height,
+            })
+            syncingRef.current = false
+          }
+        })
+      }
+
+      // Handle shape deletions
+      if (changes.removed) {
+        Object.values(changes.removed).forEach((removed) => {
+          if (removed.typeName !== 'shape') return
+          const itemId = shapeIdToCanvasItemId(removed.id as TLShapeId)
+          const existingItem = useAppStore.getState().canvasItems.find(i => i.id === itemId)
+          if (existingItem) {
+            syncingRef.current = true
+            useAppStore.getState().removeCanvasItem(itemId)
+            processedItemsRef.current.delete(itemId)
+            syncingRef.current = false
+          }
+        })
+      }
+    })
+
+    // Listen for selection changes
+    ed.store.listen(() => {
+      const ids = ed.getSelectedShapeIds().map(id => shapeIdToCanvasItemId(id))
+      setSelectedShapeIds(ids)
+    }, { source: 'user', scope: 'session' })
+
     return () => {
-      el.removeEventListener("mousedown", onDown)
-      window.removeEventListener("mousemove", onMove)
-      window.removeEventListener("mouseup", onUp)
+      unsub()
     }
-  }, [])
+  }, [setEditor, setSelectedShapeIds])
 
-  // Wheel zoom toward cursor
-  const handleWheel = useCallback((e: Konva.KonvaEventObject<WheelEvent>) => {
-    e.evt.preventDefault()
-    const stage = stageRef.current
-    if (!stage) return
-    const BY = 1.08
-    const old = stage.scaleX()
-    const pointer = stage.getPointerPosition()
-    if (!pointer) return
-    const to = { x: (pointer.x - stage.x()) / old, y: (pointer.y - stage.y()) / old }
-    const next = e.evt.deltaY < 0 ? Math.min(old * BY, 10) : Math.max(old / BY, 0.05)
-    stage.scale({ x: next, y: next })
-    const newPos = { x: pointer.x - to.x * next, y: pointer.y - to.y * next }
-    stage.position(newPos)
-    setBgOffset(newPos)
-    setBgScale(next)
-  }, [])
+  // Sync canvasItems changes to tldraw
+  useEffect(() => {
+    if (!editor || syncingRef.current) return
 
-  // Sync background when Stage is dragged (left-click drag)
-  const handleStageDrag = useCallback(() => {
-    const stage = stageRef.current
-    if (!stage) return
-    const pos = { x: stage.x(), y: stage.y() }
-    setBgOffset(pos)
-  }, [])
+    canvasItems.forEach((item) => {
+      const shapeId = canvasItemIdToShapeId(item.id)
+      const existingShape = editor.getShape(shapeId)
 
-  // Block Konva drag when middle button is held
-  const handleDragStart = useCallback((e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => {
-    if (midPanRef.current) e.target.stopDrag()
-  }, [])
-
-  // Click on empty Stage → deselect
-  const handleStageClick = useCallback(
-    (e: Konva.KonvaEventObject<MouseEvent>) => {
-      if (e.target === stageRef.current) {
-        setSelectedId(null)
-        setEditingMode(false, null)
+      // Skip items that are still uploading (unless placeholder)
+      if (item.uploading && !item.placeholder) {
+        return
       }
-    },
-    [setEditingMode]
-  )
 
-  const handleStageTap = useCallback(
-    (e: Konva.KonvaEventObject<TouchEvent>) => {
-      if (e.target === stageRef.current) {
-        setSelectedId(null)
-        setEditingMode(false, null)
+      if (!existingShape && !processedItemsRef.current.has(item.id)) {
+        // Create new shape
+        syncingRef.current = true
+        createTldrawImageFromItem(editor, item)
+        processedItemsRef.current.add(item.id)
+        syncingRef.current = false
+      } else if (existingShape) {
+        // Update existing shape position/size if needed
+        const needsUpdate = 
+          existingShape.x !== item.x ||
+          existingShape.y !== item.y ||
+          (existingShape.props as { w?: number; h?: number })?.w !== item.width ||
+          (existingShape.props as { w?: number; h?: number })?.h !== item.height
+
+        if (needsUpdate) {
+          syncingRef.current = true
+          if (existingShape.type === 'image') {
+            editor.updateShape({
+              id: shapeId,
+              type: 'image',
+              x: item.x,
+              y: item.y,
+              props: {
+                w: item.width,
+                h: item.height,
+              }
+            })
+          } else if (existingShape.type === 'geo') {
+            editor.updateShape({
+              id: shapeId,
+              type: 'geo',
+              x: item.x,
+              y: item.y,
+              props: {
+                w: item.width,
+                h: item.height,
+              }
+            })
+          }
+          syncingRef.current = false
+        }
+
+        // Handle placeholder -> image conversion
+        if (existingShape.type === 'geo' && !item.placeholder && item.url) {
+          syncingRef.current = true
+          editor.deleteShape(shapeId)
+          processedItemsRef.current.delete(item.id)
+          createTldrawImageFromItem(editor, item)
+          processedItemsRef.current.add(item.id)
+          syncingRef.current = false
+        }
       }
-    },
-    [setEditingMode]
-  )
+    })
 
-  const handleItemSelect = useCallback(
-    (item: CanvasItem) => {
-      if (item.uploading || item.placeholder) return
-      setSelectedId(item.id)
-      setEditingMode(true, {
-        id: item.id,
-        localUrl: item.url,
-        falUrl: item.falUrl ?? item.url,
-        name: `canvas-${item.id}.png`,
-        uploading: false,
-      })
-    },
-    [setEditingMode]
-  )
+    // Remove shapes that no longer exist in canvasItems
+    const currentItemIds = new Set(canvasItems.map(i => i.id))
+    processedItemsRef.current.forEach((itemId) => {
+      if (!currentItemIds.has(itemId)) {
+        const shapeId = canvasItemIdToShapeId(itemId)
+        if (editor.getShape(shapeId)) {
+          syncingRef.current = true
+          editor.deleteShape(shapeId)
+          syncingRef.current = false
+        }
+        processedItemsRef.current.delete(itemId)
+      }
+    })
+  }, [editor, canvasItems])
 
-  // File drag-and-drop
-  const handleDragEnter = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    dragCounterRef.current++
-    setIsDraggingFile(true)
-  }, [])
+  // Handle selection for editing mode
+  useEffect(() => {
+    if (selectedShapeIds.length === 1) {
+      const itemId = selectedShapeIds[0]
+      const item = canvasItems.find(i => i.id === itemId)
+      if (item && !item.uploading && !item.placeholder) {
+        setEditingMode(true, {
+          id: item.id,
+          localUrl: item.url,
+          falUrl: item.falUrl ?? item.url,
+          name: `canvas-${item.id}.png`,
+          uploading: false,
+        })
+      }
+    } else if (selectedShapeIds.length === 0 && editingTarget) {
+      setEditingMode(false, null)
+    }
+  }, [selectedShapeIds, canvasItems, setEditingMode, editingTarget])
 
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    if (--dragCounterRef.current === 0) setIsDraggingFile(false)
-  }, [])
-
-  const handleDrop = useCallback(
+  // File drop handler for external drops
+  const handleExternalDrop = useCallback(
     async (e: React.DragEvent) => {
-      e.preventDefault()
-      dragCounterRef.current = 0
-      setIsDraggingFile(false)
-
+      // Only handle drops outside tldraw (tldraw handles its own drops)
       const file = e.dataTransfer.files[0]
       if (!file) return
-      const err = validateFile(file)
-      if (err) { toast.error(err); return }
 
-      const stage = stageRef.current
-      const rect = containerRef.current?.getBoundingClientRect()
+      const err = validateFile(file)
+      if (err) {
+        toast.error(err)
+        return
+      }
+
+      e.preventDefault()
+      e.stopPropagation()
+
+      // Get drop position in tldraw coordinates
       let dropX = 60, dropY = 60
-      if (stage && rect) {
-        const p = stage.getAbsoluteTransform().copy().invert()
-          .point({ x: e.clientX - rect.left, y: e.clientY - rect.top })
-        dropX = p.x
-        dropY = p.y
+      if (editor) {
+        const point = editor.screenToPage({ x: e.clientX, y: e.clientY })
+        dropX = point.x
+        dropY = point.y
       }
 
       const id = nanoid()
       const localUrl = URL.createObjectURL(file)
-      addCanvasItem({ id, url: localUrl, falUrl: null, x: dropX, y: dropY, width: 0, height: 0, uploading: true })
+      addCanvasItem({ 
+        id, 
+        url: localUrl, 
+        falUrl: null, 
+        x: dropX, 
+        y: dropY, 
+        width: 0, 
+        height: 0, 
+        uploading: true 
+      })
+
+      // Load image to get dimensions
+      const img = new Image()
+      img.onload = () => {
+        const maxW = 480
+        const scale = Math.min(maxW / img.naturalWidth, maxW / img.naturalHeight, 1)
+        const width = Math.round(img.naturalWidth * scale)
+        const height = Math.round(img.naturalHeight * scale)
+        useAppStore.getState().updateCanvasItem(id, { width, height })
+      }
+      img.src = localUrl
 
       try {
         const falUrl = await uploadFile(file)
@@ -365,123 +315,67 @@ export function CanvasArea() {
         useAppStore.getState().updateCanvasItem(id, { uploading: false })
       }
     },
-    [addCanvasItem]
+    [editor, addCanvasItem]
   )
 
   const handleDownload = useCallback(() => {
-    const item = canvasItems.find((i) => i.id === selectedId) ?? canvasItems.filter((i) => !i.placeholder).at(-1)
+    const selectedItemId = selectedShapeIds[0]
+    const item = selectedItemId 
+      ? canvasItems.find((i) => i.id === selectedItemId) 
+      : canvasItems.filter((i) => !i.placeholder).at(-1)
     if (!item) return
     const a = document.createElement("a")
     a.href = item.falUrl ?? item.url
     a.download = `lovart-${Date.now()}.png`
     a.click()
-  }, [selectedId, canvasItems])
+  }, [selectedShapeIds, canvasItems])
 
   const handleClear = useCallback(() => {
-    if (selectedId) {
-      removeCanvasItem(selectedId)
-      setSelectedId(null)
+    if (selectedShapeIds.length > 0 && editor) {
+      selectedShapeIds.forEach((itemId) => {
+        const shapeId = canvasItemIdToShapeId(itemId)
+        editor.deleteShape(shapeId)
+      })
+      setSelectedShapeIds([])
       setEditingMode(false, null)
     } else {
       clearCanvas()
+      processedItemsRef.current.clear()
+      if (editor) {
+        editor.selectAll()
+        editor.deleteShapes(editor.getSelectedShapeIds())
+      }
     }
-  }, [selectedId, removeCanvasItem, clearCanvas, setEditingMode])
+  }, [selectedShapeIds, editor, clearCanvas, setSelectedShapeIds, setEditingMode])
 
   const hasImages = canvasItems.some((i) => !i.placeholder)
 
-  // Background grid dynamic style (follows canvas pan/zoom)
-  const BASE_GRID_SIZE = 22
-  const gridSize = BASE_GRID_SIZE * bgScale
-  const bgStyle = {
-    backgroundPosition: `${bgOffset.x}px ${bgOffset.y}px`,
-    backgroundSize: `${gridSize}px ${gridSize}px`,
-  }
-
   return (
     <div
-      className="relative flex flex-col h-full bg-zinc-950 border-r border-zinc-800 canvas-dot-grid"
-      style={bgStyle}
+      ref={containerRef}
+      className="relative flex flex-col h-full bg-zinc-950 border-r border-zinc-800"
+      onDrop={handleExternalDrop}
+      onDragOver={(e) => e.preventDefault()}
     >
-      <div
-        ref={containerRef}
-        className={`flex-1 min-h-0 transition-shadow ${isDraggingFile ? "ring-2 ring-violet-500 ring-inset" : ""}`}
-        onDragEnter={handleDragEnter}
-        onDragLeave={handleDragLeave}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={handleDrop}
-      >
-        {size.width > 0 && size.height > 0 && (
-          <Stage
-            ref={stageRef}
-            width={size.width}
-            height={size.height}
-            draggable
-            onDragStart={handleDragStart}
-            onDragMove={handleStageDrag}
-            onWheel={handleWheel}
-            onClick={handleStageClick}
-            onTap={handleStageTap}
-            style={{ cursor: "grab" }}
-          >
-            <Layer>
-              {canvasItems.map((item) =>
-                item.placeholder ? (
-                  <PlaceholderNode key={item.id} item={item} />
-                ) : (
-                  <CanvasItemNode
-                    key={item.id}
-                    item={item}
-                    isSelected={selectedId === item.id}
-                    onSelect={() => handleItemSelect(item)}
-                    onDragMove={selectedId === item.id ? (x, y) => setDragItemPos({ x, y }) : undefined}
-                    onDragEnd={selectedId === item.id ? () => setDragItemPos(null) : undefined}
-                  />
-                )
-              )}
-            </Layer>
-          </Stage>
-        )}
+      {/* tldraw canvas */}
+      <div className="flex-1 min-h-0" style={{ position: 'relative' }}>
+        <div style={{ position: 'absolute', inset: 0 }}>
+          <Tldraw
+            onMount={handleMount}
+            autoFocus
+          />
+        </div>
 
+        {/* Empty state overlay */}
         {!hasImages && canvasItems.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-600 pointer-events-none">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-600 pointer-events-none z-10">
             <ImageIcon className="w-16 h-16" />
             <p className="text-sm">拖入图片开始创作</p>
           </div>
         )}
 
-        {/* Canvas-synced overlay for inline edit panel */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden">
-          <div
-            style={{
-              position: 'absolute',
-              transform: `translate(${bgOffset.x}px, ${bgOffset.y}px) scale(${bgScale})`,
-              transformOrigin: '0 0',
-            }}
-          >
-            {selectedId && (() => {
-              const selectedItem = canvasItems.find(i => i.id === selectedId)
-              if (!selectedItem || selectedItem.placeholder) return null
-              const posX = dragItemPos ? dragItemPos.x : selectedItem.x
-              const posY = dragItemPos ? dragItemPos.y : selectedItem.y
-              const panelW = Math.max(selectedItem.width || 280, 280)
-              return (
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: posX,
-                    top: posY + (selectedItem.height || 0) + 12,
-                    width: panelW,
-                    pointerEvents: 'auto',
-                  }}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <InlineEditPanel item={selectedItem} visible={true} />
-                </div>
-              )
-            })()}
-          </div>
-        </div>
+        {/* Inline edit panel - self-positioning */}
+        <InlineEditPanel />
       </div>
 
       {/* Bottom controls */}
@@ -497,7 +391,7 @@ export function CanvasArea() {
           )}
           {(canvasItems.length > 0 || isEditingMode) && (
             <Button size="sm" variant="ghost" onClick={handleClear} className="text-zinc-400 hover:text-zinc-100">
-              <X className="w-4 h-4 mr-1" /> {selectedId ? "删除" : "清除"}
+              <X className="w-4 h-4 mr-1" /> {selectedShapeIds.length > 0 ? "删除" : "清除"}
             </Button>
           )}
         </div>
