@@ -5,6 +5,7 @@ import { useAppStore } from "@/lib/store"
 import { generateImage, editImage } from "@/lib/fal"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ArrowUp, Loader2 } from "lucide-react"
 import { nanoid } from "nanoid"
 
@@ -89,18 +90,25 @@ export function TextInput({ onFocus }: { onFocus?: () => void }) {
           t.style.height = Math.min(t.scrollHeight, 128) + "px"
         }}
       />
-      <Button
-        size="icon"
-        onClick={handleSend}
-        disabled={isBlocked || !value.trim()}
-        className="shrink-0 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40"
-      >
-        {isLoading ? (
-          <Loader2 className="w-4 h-4 animate-spin" />
-        ) : (
-          <ArrowUp className="w-4 h-4" />
-        )}
-      </Button>
+      <TooltipProvider>
+        <Tooltip open={hasPendingUploads && !isLoading ? undefined : false}>
+          <TooltipTrigger>
+            <Button
+              size="icon"
+              onClick={handleSend}
+              disabled={isBlocked || !value.trim()}
+              className="shrink-0 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-40"
+            >
+              {isLoading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <ArrowUp className="w-4 h-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>正在上传图片...</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </div>
   )
 }
