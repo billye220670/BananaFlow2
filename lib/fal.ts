@@ -6,33 +6,46 @@ interface FalResult {
   data: { images: Array<{ url: string; width: number; height: number }> }
 }
 
-const GENERATE_BASE_INPUT = {
+// 统一使用 fal-ai/nano-banana-2/edit 模型的基础配置
+const BASE_INPUT = {
   num_images: 1,
   output_format: "png" as const,
-}
-
-const EDIT_BASE_INPUT = {
-  num_images: 1,
-  aspect_ratio: "auto" as const,
-  output_format: "png" as const,
-  resolution: "1K" as const,
+  safety_tolerance: "4",
+  limit_generations: true,
 }
 
 export async function generateImage({
   prompt,
   referenceUrls,
+  aspectRatio,
+  resolution,
 }: {
   prompt: string
   referenceUrls: string[]
+  aspectRatio?: string
+  resolution?: string
 }): Promise<string> {
-  const input = {
-    ...GENERATE_BASE_INPUT,
+  const input: Record<string, unknown> = {
+    ...BASE_INPUT,
     prompt,
+    aspect_ratio: aspectRatio || "auto",
+    ...(resolution && { resolution }),
     ...(referenceUrls.length > 0 && { image_urls: referenceUrls }),
   }
-  const result = (await fal.subscribe("fal-ai/nano-banana", {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    input: input as any,
+
+  // 调试日志：FAL API 完整请求入参
+  console.log('[generateImage] === FAL API 完整请求入参 ===')
+  console.log('[generateImage] model:', 'fal-ai/nano-banana-2/edit')
+  console.log('[generateImage] input:', JSON.stringify(input, null, 2))
+
+  const result = (await fal.subscribe("fal-ai/nano-banana-2/edit", {
+    input,
+    logs: true,
+    onQueueUpdate: (update) => {
+      if (update.status === "IN_PROGRESS") {
+        update.logs?.map((log) => log.message).forEach(console.log)
+      }
+    },
   })) as FalResult
   return result.data.images[0].url
 }
@@ -46,11 +59,26 @@ export async function editImage({
   targetUrl: string
   referenceUrls: string[]
 }): Promise<string> {
-  const result = (await fal.subscribe("fal-ai/nano-banana/edit", {
-    input: {
-      ...EDIT_BASE_INPUT,
-      prompt,
-      image_urls: [targetUrl, ...referenceUrls],
+  const input: Record<string, unknown> = {
+    ...BASE_INPUT,
+    prompt,
+    aspect_ratio: "auto",
+    resolution: "1K",
+    image_urls: [targetUrl, ...referenceUrls],
+  }
+
+  // 调试日志：FAL API 完整请求入参
+  console.log('[editImage] === FAL API 完整请求入参 ===')
+  console.log('[editImage] model:', 'fal-ai/nano-banana-2/edit')
+  console.log('[editImage] input:', JSON.stringify(input, null, 2))
+
+  const result = (await fal.subscribe("fal-ai/nano-banana-2/edit", {
+    input,
+    logs: true,
+    onQueueUpdate: (update) => {
+      if (update.status === "IN_PROGRESS") {
+        update.logs?.map((log) => log.message).forEach(console.log)
+      }
     },
   })) as FalResult
   return result.data.images[0].url

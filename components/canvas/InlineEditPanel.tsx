@@ -46,7 +46,9 @@ export function InlineEditPanel() {
     : null
 
   // Determine if panel should be visible
-  const isVisible = selectedItem && !selectedItem.placeholder && !selectedItem.uploading
+  // 暂时禁用 InlineEditPanel
+  const isVisible = false
+  // 原逻辑: const isVisible = selectedItem && !selectedItem.placeholder && !selectedItem.uploading
 
   const refs = selectedItem?.referenceImages || []
 
@@ -87,7 +89,8 @@ export function InlineEditPanel() {
 
   // Update position when editor camera changes (zoom/pan)
   useEffect(() => {
-    if (!editor) return
+    // 如果面板不可见，不注册任何监听器
+    if (!editor || !isVisible) return
 
     // Initial position calculation
     updatePosition()
@@ -100,7 +103,7 @@ export function InlineEditPanel() {
     return () => {
       unsubscribe()
     }
-  }, [editor, updatePosition])
+  }, [editor, updatePosition, isVisible])
 
   // Also update when selected item changes
   useEffect(() => {
@@ -204,7 +207,39 @@ export function InlineEditPanel() {
         resultUrl = await generateImage({ prompt, referenceUrls: refUrls })
       }
 
-      updateCanvasItem(phId, { url: resultUrl, falUrl: resultUrl, placeholder: false })
+      // Load image to get natural dimensions before updating CanvasItem
+      const img = new Image()
+      img.onload = () => {
+        const maxW = 480
+        const scale = Math.min(maxW / img.naturalWidth, maxW / img.naturalHeight, 1)
+        const width = Math.round(img.naturalWidth * scale)
+        const height = Math.round(img.naturalHeight * scale)
+        // Use prompt prefix (first 20 chars) as fileName, fallback to "AI Generated"
+        const fileName = prompt.length > 0 
+          ? `AI-${prompt.slice(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.png`
+          : "AI Generated.png"
+        updateCanvasItem(phId, { 
+          url: resultUrl, 
+          falUrl: resultUrl, 
+          placeholder: false,
+          width,
+          height,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          fileName,
+        })
+      }
+      img.onerror = () => {
+        // Fallback: update without dimensions if image fails to load
+        updateCanvasItem(phId, { 
+          url: resultUrl, 
+          falUrl: resultUrl, 
+          placeholder: false,
+          fileName: "AI Generated.png",
+        })
+      }
+      img.src = resultUrl
+
       appendMessage({
         id: nanoid(),
         role: "assistant",
@@ -302,7 +337,7 @@ export function InlineEditPanel() {
       className="fixed transition-all duration-200 ease-out opacity-100 translate-y-0 pointer-events-auto"
       style={{
         left: position.x,
-        top: position.y + 12,
+        top: position.y + 20,
         width: Math.max(position.width, 280),
         zIndex: 1000,
       }}

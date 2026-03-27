@@ -49,24 +49,24 @@
 }
 
 :root {
-  --background: hsl(0 0% 3.9%);
-  --foreground: hsl(0 0% 98%);
-  --card: hsl(0 0% 9%);
-  --card-foreground: hsl(0 0% 98%);
-  --popover: hsl(0 0% 9%);
-  --popover-foreground: hsl(0 0% 98%);
+  --background: hsl(0 0% 100%);
+  --foreground: hsl(0 0% 3.9%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(0 0% 3.9%);
+  --popover: hsl(0 0% 100%);
+  --popover-foreground: hsl(0 0% 3.9%);
   --primary: hsl(263.4 70% 50.4%);
   --primary-foreground: hsl(0 0% 98%);
-  --secondary: hsl(0 0% 14.9%);
-  --secondary-foreground: hsl(0 0% 98%);
-  --muted: hsl(0 0% 14.9%);
-  --muted-foreground: hsl(0 0% 63.9%);
-  --accent: hsl(0 0% 14.9%);
-  --accent-foreground: hsl(0 0% 98%);
-  --destructive: hsl(0 62.8% 30.6%);
+  --secondary: hsl(0 0% 96.1%);
+  --secondary-foreground: hsl(0 0% 9%);
+  --muted: hsl(0 0% 96.1%);
+  --muted-foreground: hsl(0 0% 45.1%);
+  --accent: hsl(0 0% 96.1%);
+  --accent-foreground: hsl(0 0% 9%);
+  --destructive: hsl(0 84.2% 60.2%);
   --destructive-foreground: hsl(0 0% 98%);
-  --border: hsl(0 0% 27.1%);
-  --input: hsl(0 0% 27.1%);
+  --border: hsl(0 0% 89.8%);
+  --input: hsl(0 0% 89.8%);
   --ring: hsl(263.4 70% 50.4%);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
@@ -74,13 +74,13 @@
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.5rem;
-  --sidebar: hsl(0 0% 9%);
-  --sidebar-foreground: hsl(0 0% 98%);
+  --sidebar: hsl(0 0% 100%);
+  --sidebar-foreground: hsl(0 0% 3.9%);
   --sidebar-primary: hsl(263.4 70% 50.4%);
   --sidebar-primary-foreground: hsl(0 0% 98%);
-  --sidebar-accent: hsl(0 0% 14.9%);
-  --sidebar-accent-foreground: hsl(0 0% 98%);
-  --sidebar-border: hsl(0 0% 27.1%);
+  --sidebar-accent: hsl(0 0% 96.1%);
+  --sidebar-accent-foreground: hsl(0 0% 9%);
+  --sidebar-border: hsl(0 0% 89.8%);
   --sidebar-ring: hsl(263.4 70% 50.4%);
 }
 
@@ -135,5 +135,45 @@
 
 /* tldraw container styles */
 .tl-container {
-  background-color: hsl(0 0% 3.9%) !important;
+  background-color: hsl(0 0% 95%) !important;
+}
+
+/* 色相滑条自定义样式 */
+.hue-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 9999px;
+}
+
+.hue-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+  margin-top: -2px;
+}
+
+.hue-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: white;
+  border: 2px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  cursor: pointer;
+}
+
+.hue-slider::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 5px;
+}
+
+.hue-slider::-moz-range-track {
+  height: 10px;
+  border-radius: 5px;
 }

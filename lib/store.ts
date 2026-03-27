@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { CanvasItem, StoredRef, Message } from "@/lib/types"
+import type { CanvasItem, StoredRef, Message, Marker } from "@/lib/types"
+import { nanoid } from "nanoid"
 import type { Editor, TLShapeId } from "tldraw"
 
 const MAX_HISTORY = 50
@@ -30,10 +31,25 @@ interface Actions {
   updateItemReference: (itemId: string, refId: string, patch: Partial<StoredRef>) => void
   reorderItemReferences: (itemId: string, newOrder: string[]) => void
   appendMessage: (msg: Message) => void
+  updateMessage: (id: string, patch: Partial<Message>) => void
   setLoading: (loading: boolean) => void
   // tldraw integration
   setEditor: (editor: Editor | null) => void
   setSelectedShapeIds: (ids: string[]) => void
+  // project name
+  setProjectName: (name: string) => void
+  // chat panel
+  toggleChat: () => void
+  openChat: () => void
+  closeChat: () => void
+  clearChatHistory: () => void
+  setChatPanelWidth: (width: number) => void
+  // marker actions
+  setActiveTool: (toolId: string) => void
+  addMarker: (itemId: string, relativeX: number, relativeY: number) => boolean
+  removeMarker: (markerId: string) => void
+  removeMarkersByItemId: (itemId: string) => void
+  clearMarkers: () => void
 }
 
 // ID mapping helpers
@@ -47,6 +63,7 @@ export function shapeIdToCanvasItemId(shapeId: TLShapeId): string {
 
 interface PersistedSlice {
   chatHistory: Message[]
+  projectName: string
 }
 
 interface SessionSlice {
@@ -57,6 +74,12 @@ interface SessionSlice {
   // tldraw integration
   editor: Editor | null
   selectedShapeIds: string[]
+  // chat panel
+  isChatOpen: boolean
+  chatPanelWidth: number
+  // marker tool
+  markers: Marker[]
+  activeTool: string
 }
 
 export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
@@ -64,6 +87,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
     (set) => ({
       // persisted
       chatHistory: [],
+      projectName: 'Untitled',
 
       // session-only
       canvasItems: [],
@@ -73,6 +97,12 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       // tldraw integration
       editor: null,
       selectedShapeIds: [],
+      // chat panel
+      isChatOpen: false,
+      chatPanelWidth: 380,
+      // marker tool
+      markers: [],
+      activeTool: 'select',
 
       // canvas actions
       addCanvasItem: (item) =>
@@ -89,10 +119,34 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
           // Revoke Object URLs for all reference images before removing
           if (item?.referenceImages) {
             item.referenceImages.forEach((ref) => {
-              URL.revokeObjectURL(ref.localUrl)
+              if (ref.localUrl?.startsWith('blob:')) {
+                URL.revokeObjectURL(ref.localUrl)
+              }
             })
           }
-          return { canvasItems: s.canvasItems.filter((i) => i.id !== id) }
+          // 删除 canvas item
+          const nextCanvasItems = s.canvasItems.filter((i) => i.id !== id)
+          // 同步清理该图片的 markers 并重新编号
+          const filtered = s.markers.filter((m) => m.itemId !== id)
+          const renumbered = filtered.map((m, i) => ({ ...m, number: i + 1 }))
+          // 触发 editor meta 信号通知 MarkerOverlay 重渲染
+          const editor = useAppStore.getState().editor
+          if (editor) {
+            try {
+              editor.updateInstanceState({
+                meta: {
+                  ...editor.getInstanceState().meta,
+                  markersVersion: Date.now(),
+                },
+              })
+            } catch (e) {
+              // editor 可能未就绪，静默忽略
+            }
+          }
+          return {
+            canvasItems: nextCanvasItems,
+            markers: renumbered,
+          }
         }),
 
       clearCanvas: () =>
@@ -101,11 +155,27 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
           s.canvasItems.forEach((item) => {
             if (item.referenceImages) {
               item.referenceImages.forEach((ref) => {
-                URL.revokeObjectURL(ref.localUrl)
+                if (ref.localUrl?.startsWith('blob:')) {
+                  URL.revokeObjectURL(ref.localUrl)
+                }
               })
             }
           })
-          return { canvasItems: [], isEditingMode: false, editingTarget: null }
+          // 触发 editor meta 信号通知 MarkerOverlay 重渲染
+          const editor = useAppStore.getState().editor
+          if (editor) {
+            try {
+              editor.updateInstanceState({
+                meta: {
+                  ...editor.getInstanceState().meta,
+                  markersVersion: Date.now(),
+                },
+              })
+            } catch (e) {
+              // editor 可能未就绪，静默忽略
+            }
+          }
+          return { canvasItems: [], isEditingMode: false, editingTarget: null, markers: [] }
         }),
 
       setEditingMode: (active, target) =>
@@ -173,11 +243,120 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
           return { chatHistory: next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next }
         }),
 
+      updateMessage: (id, patch) =>
+        set((s) => ({
+          chatHistory: s.chatHistory.map((m) => m.id === id ? { ...m, ...patch } : m),
+        })),
+
       setLoading: (loading) => set({ isLoading: loading }),
     
       // tldraw integration
       setEditor: (editor) => set({ editor }),
       setSelectedShapeIds: (ids) => set({ selectedShapeIds: ids }),
+      
+      // project name
+      setProjectName: (name) => set({ projectName: name }),
+      
+      // chat panel
+      toggleChat: () => set((s) => ({ isChatOpen: !s.isChatOpen })),
+      openChat: () => set({ isChatOpen: true }),
+      closeChat: () => set({ isChatOpen: false }),
+      clearChatHistory: () => set({ chatHistory: [] }),
+      setChatPanelWidth: (width) => set({ chatPanelWidth: Math.max(320, Math.min(600, width)) }),
+      
+      // marker actions
+      setActiveTool: (toolId) => set({ activeTool: toolId }),
+      
+      addMarker: (itemId, relativeX, relativeY) => {
+        const state = useAppStore.getState()
+        if (state.markers.length >= 8) return false
+        const newMarker: Marker = {
+          id: nanoid(),
+          itemId,
+          number: state.markers.length + 1,
+          relativeX,
+          relativeY,
+        }
+        set({ markers: [...state.markers, newMarker] })
+        // 触发 editor meta 信号通知 MarkerOverlay 重渲染
+        const editor = state.editor
+        if (editor) {
+          try {
+            editor.updateInstanceState({
+              meta: {
+                ...editor.getInstanceState().meta,
+                markersVersion: Date.now(),
+              },
+            })
+          } catch (e) {
+            // editor 可能未就绪，静默忽略
+          }
+        }
+        return true
+      },
+      
+      removeMarker: (markerId) =>
+        set((s) => {
+          const filtered = s.markers.filter((m) => m.id !== markerId)
+          // 重新编号
+          const renumbered = filtered.map((m, i) => ({ ...m, number: i + 1 }))
+          // 触发 editor meta 信号通知 MarkerOverlay 重渲染
+          const editor = useAppStore.getState().editor
+          if (editor) {
+            try {
+              editor.updateInstanceState({
+                meta: {
+                  ...editor.getInstanceState().meta,
+                  markersVersion: Date.now(),
+                },
+              })
+            } catch (e) {
+              // editor 可能未就绪，静默忽略
+            }
+          }
+          return { markers: renumbered }
+        }),
+      
+      removeMarkersByItemId: (itemId) =>
+        set((s) => {
+          const filtered = s.markers.filter((m) => m.itemId !== itemId)
+          // 重新编号
+          const renumbered = filtered.map((m, i) => ({ ...m, number: i + 1 }))
+          // 触发 editor meta 信号通知 MarkerOverlay 重渲染
+          const editor = useAppStore.getState().editor
+          if (editor) {
+            try {
+              editor.updateInstanceState({
+                meta: {
+                  ...editor.getInstanceState().meta,
+                  markersVersion: Date.now(),
+                },
+              })
+            } catch (e) {
+              // editor 可能未就绪，静默忽略
+            }
+          }
+          return { markers: renumbered }
+        }),
+      
+      clearMarkers: () =>
+        set(() => {
+          // 触发 editor meta 信号通知 MarkerOverlay 重渲染
+          const editor = useAppStore.getState().editor
+          if (editor) {
+            try {
+              editor.updateInstanceState({
+                meta: {
+                  ...editor.getInstanceState().meta,
+                  markersVersion: Date.now(),
+                },
+              })
+            } catch (e) {
+              // editor 可能未就绪，静默忽略
+            }
+          }
+          return { markers: [] }
+        }),
     }),
     {
       name: "lovart-storage",
@@ -192,7 +371,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
         },
         removeItem: (name: string) => safeStorage.removeItem(name),
       },
-      partialize: (state) => ({ chatHistory: state.chatHistory }),
+      partialize: (state) => ({ chatHistory: state.chatHistory, projectName: state.projectName }),
     }
   )
 )

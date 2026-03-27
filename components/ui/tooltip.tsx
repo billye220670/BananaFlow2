@@ -1,8 +1,115 @@
 "use client"
 
+import { useState, useRef, useCallback, useEffect } from "react"
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
 
 import { cn } from "@/lib/utils"
+
+// ── Custom Tooltip - Pure React Implementation ────────────────────────────────
+
+interface CustomTooltipProps {
+  children: React.ReactNode
+  content: string
+  side?: 'top' | 'bottom' | 'left' | 'right'
+  delay?: number
+}
+
+export function CustomTooltip({ children, content, side = 'top', delay = 500 }: CustomTooltipProps) {
+  const [visible, setVisible] = useState(false)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const [shouldRender, setShouldRender] = useState(false)
+  const triggerRef = useRef<HTMLDivElement>(null)
+  const timerRef = useRef<NodeJS.Timeout | null>(null)
+
+  const calculatePosition = useCallback(() => {
+    if (!triggerRef.current) return { x: 0, y: 0 }
+    const rect = triggerRef.current.getBoundingClientRect()
+    let x = 0, y = 0
+
+    switch (side) {
+      case 'top':
+        x = rect.left + rect.width / 2
+        y = rect.top - 8
+        break
+      case 'bottom':
+        x = rect.left + rect.width / 2
+        y = rect.bottom + 8
+        break
+      case 'left':
+        x = rect.left - 8
+        y = rect.top + rect.height / 2
+        break
+      case 'right':
+        x = rect.right + 8
+        y = rect.top + rect.height / 2
+        break
+    }
+    return { x, y }
+  }, [side])
+
+  const show = useCallback(() => {
+    timerRef.current = setTimeout(() => {
+      const pos = calculatePosition()
+      setPosition(pos)
+      setShouldRender(true)
+      requestAnimationFrame(() => setVisible(true))
+    }, delay)
+  }, [delay, calculatePosition])
+
+  const hide = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+    setVisible(false)
+    // Wait for fade-out animation to complete before removing from DOM
+    setTimeout(() => setShouldRender(false), 150)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+      }
+    }
+  }, [])
+
+  const getTransform = () => {
+    switch (side) {
+      case 'top':
+        return 'translate(-50%, -100%)'
+      case 'bottom':
+        return 'translate(-50%, 0)'
+      case 'left':
+        return 'translate(-100%, -50%)'
+      case 'right':
+        return 'translate(0, -50%)'
+    }
+  }
+
+  return (
+    <div ref={triggerRef} onMouseEnter={show} onMouseLeave={hide} className="inline-flex">
+      {children}
+      {shouldRender && (
+        <div
+          className={cn(
+            "fixed z-[100] px-2.5 py-1.5 bg-zinc-900 text-white text-xs rounded-md whitespace-nowrap pointer-events-none transition-opacity duration-150",
+            visible ? "opacity-100" : "opacity-0"
+          )}
+          style={{
+            left: position.x,
+            top: position.y,
+            transform: getTransform(),
+          }}
+        >
+          {content}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Base UI Tooltip Components ────────────────────────────────────────────────
 
 function TooltipProvider({
   delay = 0,

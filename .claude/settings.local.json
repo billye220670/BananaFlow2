@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell -Command \"Add-Type -AssemblyName System.IO.Compression.FileSystem; \\\\$zip = [System.IO.Compression.ZipFile]::OpenRead\\('C:\\\\\\\\Users\\\\\\\\Tintt\\\\\\\\Desktop\\\\\\\\tldraw.zip'\\); \\\\$zip.Entries | ForEach-Object { \\\\$_.FullName }; \\\\$zip.Dispose\\(\\)\")",
+      "Read(//c/Users/Tintt/.claude/**)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d.get\\(''''skills'''', d.get\\(''''skillsDir'''', ''''not found''''\\)\\), indent=2\\)\\)\")",
+      "Bash(powershell -Command \"Add-Type -AssemblyName System.IO.Compression.FileSystem; \\\\$zip = [System.IO.Compression.ZipFile]::OpenRead\\('C:\\\\\\\\Users\\\\\\\\Tintt\\\\\\\\Desktop\\\\\\\\tldraw.zip'\\); \\\\$entry = \\\\$zip.Entries | Where-Object { \\\\$_.FullName -eq 'tldraw/SKILL.md' }; \\\\$reader = New-Object System.IO.StreamReader\\(\\\\$entry.Open\\(\\)\\); \\\\$content = \\\\$reader.ReadToEnd\\(\\); \\\\$reader.Dispose\\(\\); \\\\$zip.Dispose\\(\\); Write-Output \\\\$content\")",
+      "Bash(powershell -Command \"\n\\\\$skillsDir = 'C:\\\\\\\\Users\\\\\\\\Tintt\\\\\\\\.claude\\\\\\\\skills\\\\\\\\tldraw'\nNew-Item -ItemType Directory -Force -Path \\\\$skillsDir | Out-Null\n\nAdd-Type -AssemblyName System.IO.Compression.FileSystem\n\\\\$zip = [System.IO.Compression.ZipFile]::OpenRead\\('C:\\\\\\\\Users\\\\\\\\Tintt\\\\\\\\Desktop\\\\\\\\tldraw.zip'\\)\n\\\\$entry = \\\\$zip.Entries | Where-Object { \\\\$_.FullName -eq 'tldraw/SKILL.md' }\n\\\\$reader = New-Object System.IO.StreamReader\\(\\\\$entry.Open\\(\\)\\)\n\\\\$content = \\\\$reader.ReadToEnd\\(\\)\n\\\\$reader.Dispose\\(\\)\n\\\\$zip.Dispose\\(\\)\n\n[System.IO.File]::WriteAllText\\(\\\\\"\\\\$skillsDir\\\\\\\\SKILL.md\\\\\", \\\\$content, [System.Text.Encoding]::UTF8\\)\nWrite-Output 'Installed.'\n\")"
+    ]
+  }
+}

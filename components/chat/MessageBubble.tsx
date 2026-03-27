@@ -14,17 +14,29 @@ export function MessageBubble({ message }: Props) {
         className={cn(
           "max-w-[85%] rounded-2xl px-4 py-3 text-sm",
           isUser
-            ? "bg-zinc-800 text-zinc-100 rounded-br-sm"
-            : "border border-violet-500/30 bg-zinc-900 text-zinc-100 rounded-bl-sm"
+            ? "bg-blue-500 text-white rounded-br-sm"
+            : "bg-gray-100 text-gray-800 rounded-bl-sm"
         )}
       >
-        <p className="whitespace-pre-wrap break-words">{message.content}</p>
-        {message.imageUrl && (
-          <img
-            src={message.imageUrl}
-            alt="Generated result"
-            className="mt-2 rounded-lg max-w-full"
-          />
+        {message.loading ? (
+          <div className="space-y-2">
+            <div className="w-[240px] h-[160px] bg-gray-200 rounded-lg animate-pulse" />
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse" />
+              <span className="text-xs text-gray-500">正在生成...</span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+            {message.imageUrl && (
+              <img
+                src={message.imageUrl}
+                alt="Generated result"
+                className="mt-2 rounded-lg max-w-full"
+              />
+            )}
+          </>
         )}
       </div>
     </div>

@@ -1,85 +1,593 @@
 "use client"
 
-import { useEffect, useRef, useCallback } from "react"
-import { Tldraw, Editor, AssetRecordType, TLShapeId, TLStoreEventInfo } from "tldraw"
+import { useEffect, useRef, useCallback, useState, useMemo } from "react"
+import { Tldraw, Editor, AssetRecordType, TLShapeId, TLStoreEventInfo, TLAssetId, useEditor, track } from "tldraw"
+import type { TLComponents } from "tldraw"
 import "tldraw/tldraw.css"
 import { useAppStore, canvasItemIdToShapeId, shapeIdToCanvasItemId } from "@/lib/store"
 import { validateFile } from "@/lib/validate"
 import { uploadFile } from "@/lib/fal"
 import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
-import { Download, X, ImageIcon } from "lucide-react"
+import { X, Minus, Plus } from "lucide-react"
+import { CustomTooltip } from "@/components/ui/tooltip"
 import { nanoid } from "nanoid"
 import type { CanvasItem } from "@/lib/types"
 import { InlineEditPanel } from "./InlineEditPanel"
+import { Toolbar } from "./Toolbar"
+import { TopBar } from "./TopBar"
 
-// Helper: Create tldraw asset + image shape from CanvasItem
-function createTldrawImageFromItem(editor: Editor, item: CanvasItem) {
+// ── Color conversion utilities ──────────────────────────────────────────────
+
+function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+  // h: 0-360, s: 0-100, v: 0-100, returns [r, g, b] each 0-255
+  s /= 100; v /= 100;
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) { r = c; g = x; }
+  else if (h < 120) { r = x; g = c; }
+  else if (h < 180) { g = c; b = x; }
+  else if (h < 240) { g = x; b = c; }
+  else if (h < 300) { r = x; b = c; }
+  else { r = c; b = x; }
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToHsv(hex: string): [number, number, number] {
+  // hex to h(0-360), s(0-100), v(0-100)
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = 60 * (((g - b) / d) % 6);
+    else if (max === g) h = 60 * ((b - r) / d + 2);
+    else h = 60 * ((r - g) / d + 4);
+  }
+  if (h < 0) h += 360;
+  const s = max === 0 ? 0 : (d / max) * 100;
+  const v = max * 100;
+  return [h, s, v];
+}
+
+// ── Helper: Convert blob URL to data URL ───────────────────────────────────
+async function blobUrlToDataUrl(blobUrl: string): Promise<string> {
+  const response = await fetch(blobUrl)
+  const blob = await response.blob()
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onloadend = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(blob)
+  })
+}
+
+// ── Helper: Preload image URL to ensure it's accessible ───────────────────────
+async function preloadImageUrl(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => resolve(true)
+    img.onerror = () => resolve(false)
+    // 不设置 crossOrigin，避免 CORS 问题
+    // 预加载只是为了验证 URL 可访问性，不需要读取像素数据
+    img.src = url
+    // Timeout after 10 seconds
+    setTimeout(() => resolve(false), 10000)
+  })
+}
+
+// ── Helper: Create tldraw asset + image shape from CanvasItem ───────────────
+// Returns shapeId on success, or null if image creation failed
+async function createTldrawImageFromItem(editor: Editor, item: CanvasItem): Promise<TLShapeId | null> {
   if (item.placeholder) {
     // Create geo shape as placeholder
     const shapeId = canvasItemIdToShapeId(item.id)
+    try {
+      editor.createShape({
+        id: shapeId,
+        type: 'geo',
+        x: item.x,
+        y: item.y,
+        props: {
+          w: item.width || 400,
+          h: item.height || 400,
+          geo: 'rectangle',
+          fill: 'solid',
+          color: 'grey',
+        }
+      })
+      return shapeId
+    } catch (err) {
+      console.error('Failed to create placeholder shape:', err)
+      return null
+    }
+  }
+
+  // Convert blob URL to data URL if needed (tldraw only accepts http:, https:, data: protocols)
+  let imageSrc = item.url
+  if (imageSrc.startsWith('blob:')) {
+    try {
+      imageSrc = await blobUrlToDataUrl(imageSrc)
+    } catch (err) {
+      console.error('Failed to convert blob URL to data URL:', err)
+      return null
+    }
+  }
+
+  // For HTTPS URLs (like FAL CDN), preload to ensure accessibility
+  if (imageSrc.startsWith('https://')) {
+    const preloadSuccess = await preloadImageUrl(imageSrc)
+    if (!preloadSuccess) {
+      console.error('Failed to preload image URL:', imageSrc.substring(0, 100) + '...')
+      return null  // Keep placeholder, don't replace with broken image
+    }
+  }
+
+  try {
+    // Create asset for image
+    const assetId = AssetRecordType.createId()
+    editor.createAssets([{
+      id: assetId,
+      type: 'image',
+      typeName: 'asset',
+      props: {
+        name: item.fileName || `canvas-${item.id}.png`,
+        src: imageSrc,
+        w: item.width || 400,
+        h: item.height || 400,
+        mimeType: 'image/png',
+        isAnimated: false,
+      },
+      meta: { canvasItemId: item.id },
+    }])
+
+    // Create image shape
+    const shapeId = canvasItemIdToShapeId(item.id)
     editor.createShape({
       id: shapeId,
-      type: 'geo',
+      type: 'image',
       x: item.x,
       y: item.y,
       props: {
+        assetId,
         w: item.width || 400,
         h: item.height || 400,
-        geo: 'rectangle',
-        fill: 'solid',
-        color: 'grey',
+      },
+    })
+
+    return shapeId
+  } catch (err) {
+    console.error('Failed to create tldraw image shape:', err)
+    return null
+  }
+}
+
+// ── Helper: Generate default name for empty input ───────────────────────────
+function generateDefaultName(editor: Editor, excludeAssetId?: string): string {
+  const assets = editor.getAssets()
+  const existingNames = new Set(
+    assets
+      .filter(a => !excludeAssetId || a.id !== excludeAssetId)
+      .map(a => (a.props as any).name?.toLowerCase())
+  )
+  let i = 1
+  while (existingNames.has(`image_${i}`)) i++
+  return `Image_${i}`
+}
+
+// ── AnnotationOverlay: 统一处理 frame 和 image 的标注 ──
+// 使用 OnTheCanvas + track()，所有数据只从 tldraw editor API 获取
+// 注意：track() 内禁止依赖 zustand，否则 React.memo 会阻断更新
+// 缓存 frame 标注数据的类型
+interface FrameAnnotationData {
+  bounds: { x: number; y: number; w: number; h: number }
+  size: string
+}
+
+// ── MarkerOverlay: 渲染画布上的标记圆圈 ──
+// 使用 track() 响应 tldraw editor 状态变化（相机移动、shape 移动等）
+const MarkerOverlay = track(() => {
+  const editor = useEditor()
+  
+  // 读取 markersVersion 建立 track 依赖（即使值不直接使用）
+  // 这样当 store 中的 marker actions 更新 meta 时，track() 能感知到变化
+  const _markersVersion = (editor.getInstanceState().meta as { markersVersion?: number })?.markersVersion
+  void _markersVersion // 避免 unused variable 警告
+  
+  // 获取相机状态以建立 track 依赖，确保相机移动时重新渲染
+  const camera = editor.getCamera()
+  void camera // 避免 unused variable 警告
+  
+  // 从 zustand store 获取 markers（在 track() 内使用 getState 避免冲突）
+  const markers = useAppStore.getState().markers
+  
+  if (markers.length === 0) return null
+  
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none',
+      }}
+    >
+      {markers.map((marker) => {
+        // 通过 canvasItemIdToShapeId 获取 tldraw shapeId
+        const shapeId = canvasItemIdToShapeId(marker.itemId)
+        const bounds = editor.getShapePageBounds(shapeId)
+        
+        // 如果 bounds 不存在（shape 已删除），跳过
+        if (!bounds) return null
+        
+        // 计算标记在页面上的位置
+        const pageX = bounds.x + marker.relativeX * bounds.w
+        const pageY = bounds.y + marker.relativeY * bounds.h
+        
+        // 转换为屏幕坐标（视口坐标）
+        const screenPoint = editor.pageToViewport({ x: pageX, y: pageY })
+        
+        return (
+          <div
+            key={marker.id}
+            style={{
+              position: 'absolute',
+              left: screenPoint.x,
+              top: screenPoint.y,
+              transform: 'translate(-50%, -50%)',
+              width: 26,
+              height: 26,
+              borderRadius: '50%',
+              backgroundColor: '#3B82F6',
+              border: '2px solid white',
+              boxShadow: '0 1px 4px rgba(0,0,0,0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'white',
+              fontSize: 12,
+              fontWeight: 700,
+              userSelect: 'none',
+              pointerEvents: 'none',
+            }}
+          >
+            {marker.number}
+          </div>
+        )
+      })}
+    </div>
+  )
+})
+
+const AnnotationOverlay = track(() => {
+  const editor = useEditor()
+
+  // ── 编辑状态（仅用于 image 重命名） ──
+  const [isEditing, setIsEditing] = useState(false)
+  const [editingName, setEditingName] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  
+  // ── Frame 标注数据缓存（优化：缩放时不重新计算 bounds） ──
+  const frameDataCacheRef = useRef<Map<string, FrameAnnotationData>>(new Map())
+  const prevFrameKeyRef = useRef<string>('')
+  
+  // ── 修复3: 缓存选中状态和 shapes 过滤结果 ──
+  const prevSelectedIdsRef = useRef<string>('')
+  const selectedImageDataCacheRef = useRef<{
+    shapeId: string | null
+    shape: ReturnType<typeof editor.getShape> | null
+    bounds: ReturnType<typeof editor.getShapePageBounds> | null
+    isImage: boolean
+    isInsideFrame: boolean
+    assetId: string | null
+    displayName: string
+    imageSize: string
+  } | null>(null)
+  const prevShapeCountRef = useRef<number>(0)
+  const imageShapesCacheRef = useRef<ReturnType<typeof editor.getCurrentPageShapes>>([])  // image shapes 缓存
+  const frameShapesCacheRef = useRef<ReturnType<typeof editor.getCurrentPageShapes>>([])  // frame shapes 缓存
+
+  // ── 统一缩放参数 ──
+  const zoomLevel = editor.getZoomLevel()
+  const fontSize = 12 / zoomLevel
+  const labelHeight = 22 / zoomLevel
+  const hGap = 8 / zoomLevel
+  const padding = 6 / zoomLevel
+
+  // ── 修复3: 缓存 shapes 过滤结果 ──
+  const allShapes = editor.getCurrentPageShapes()
+  if (allShapes.length !== prevShapeCountRef.current) {
+    prevShapeCountRef.current = allShapes.length
+    frameShapesCacheRef.current = allShapes.filter(s => s.type === 'frame')
+    imageShapesCacheRef.current = allShapes.filter(s => s.type === 'image')
+  }
+  const frameShapes = frameShapesCacheRef.current
+  
+  // 生成缓存 key：ID + x + y + w + h（当 frame 移动或调整大小时失效）
+  const frameKey = frameShapes.map(s => {
+    const props = s.props as { w: number; h: number }
+    return `${s.id}:${s.x}:${s.y}:${props.w}:${props.h}`
+  }).sort().join('|')
+  
+  // 只在 frame shapes 变化时重新计算 bounds
+  if (frameKey !== prevFrameKeyRef.current) {
+    prevFrameKeyRef.current = frameKey
+    const newCache = new Map<string, FrameAnnotationData>()
+    frameShapes.forEach(frameShape => {
+      const frameBounds = editor.getShapePageBounds(frameShape.id)
+      if (frameBounds) {
+        const fw = Math.round((frameShape.props as { w: number }).w)
+        const fh = Math.round((frameShape.props as { h: number }).h)
+        newCache.set(frameShape.id, {
+          bounds: { x: frameBounds.x, y: frameBounds.y, w: frameBounds.w, h: frameBounds.h },
+          size: `${fw} × ${fh}`
+        })
       }
     })
-    return shapeId
+    frameDataCacheRef.current = newCache
   }
 
-  // Create asset for image
-  const assetId = AssetRecordType.createId()
-  editor.createAssets([{
-    id: assetId,
-    type: 'image',
-    typeName: 'asset',
-    props: {
-      name: `canvas-${item.id}.png`,
-      src: item.url,
-      w: item.width || 400,
-      h: item.height || 400,
-      mimeType: 'image/png',
-      isAnimated: false,
-    },
-    meta: { canvasItemId: item.id },
-  }])
+  // ── 修复3: 选中图片标注数据（缓存选中状态相关计算） ──
+  const selectedIds = editor.getSelectedShapeIds()
+  const selectedIdsKey = selectedIds.join(',')
+  
+  // 只在选中状态实际变化时重新计算选中相关的数据
+  if (selectedIdsKey !== prevSelectedIdsRef.current) {
+    prevSelectedIdsRef.current = selectedIdsKey
+    const selectedShapeId = selectedIds.length === 1 ? selectedIds[0] : null
+    const selectedShape = selectedShapeId ? editor.getShape(selectedShapeId) : null
+    const selectedBounds = selectedShapeId ? editor.getShapePageBounds(selectedShapeId) : null
+    const isSelectedImage = selectedShape?.type === 'image'
+    
+    if (isSelectedImage && selectedShape && selectedBounds) {
+      const assetId = (selectedShape.props as { assetId?: string }).assetId || null
+      const asset = assetId ? editor.getAsset(assetId as any) : null
+      const displayName = (asset?.props as { name?: string })?.name || 'Image'
+      const imageSize = `${Math.round(selectedBounds.w)} × ${Math.round(selectedBounds.h)}`
+      const isInsideFrame = (() => {
+        const parent = editor.getShape(selectedShape.parentId)
+        return parent?.type === 'frame'
+      })()
+      
+      selectedImageDataCacheRef.current = {
+        shapeId: selectedShapeId,
+        shape: selectedShape,
+        bounds: selectedBounds,
+        isImage: true,
+        isInsideFrame,
+        assetId,
+        displayName,
+        imageSize,
+      }
+    } else {
+      selectedImageDataCacheRef.current = {
+        shapeId: selectedShapeId,
+        shape: selectedShape,
+        bounds: selectedBounds,
+        isImage: false,
+        isInsideFrame: false,
+        assetId: null,
+        displayName: '',
+        imageSize: '',
+      }
+    }
+  }
+  
+  // 从缓存读取选中图片数据（拖拽时位置变化需要实时读取 bounds）
+  const cachedSelectedData = selectedImageDataCacheRef.current
+  const selectedShapeId = cachedSelectedData?.shapeId || null
+  const selectedShape = cachedSelectedData?.shape
+  // 拖拽时 bounds 会变化，需要实时获取（需要转换为 TLShapeId 类型）
+  const selectedBounds = selectedShapeId ? editor.getShapePageBounds(selectedShapeId as TLShapeId) : null
 
-  // Create image shape
-  const shapeId = canvasItemIdToShapeId(item.id)
-  editor.createShape({
-    id: shapeId,
-    type: 'image',
-    x: item.x,
-    y: item.y,
-    props: {
-      assetId,
-      w: item.width || 400,
-      h: item.height || 400,
-    },
-  })
+  const isSelectedImage = selectedShape?.type === 'image'
 
-  return shapeId
-}
+  // 修复3: 从缓存读取图片名称、尺寸等数据（这些在拖拽时不变）
+  const assetId = cachedSelectedData?.assetId || null
+  const asset = assetId ? editor.getAsset(assetId as any) : null
+  const displayName = cachedSelectedData?.displayName || 'Image'
+  const truncatedName = displayName.length > 25 ? displayName.slice(0, 25) + '...' : displayName
+  // 尺寸需要实时计算（拖拽时变化）
+  const imageSize = selectedBounds ? `${Math.round(selectedBounds.w)} × ${Math.round(selectedBounds.h)}` : ''
+
+  // 父容器检测使用缓存
+  const isImageInsideFrame = cachedSelectedData?.isInsideFrame ?? false
+
+  // ── 编辑相关回调 ──
+  const handleDoubleClick = useCallback(() => {
+    setIsEditing(true)
+    setEditingName(displayName)
+    if (selectedShapeId) editor.select(selectedShapeId as TLShapeId)
+  }, [displayName, selectedShapeId, editor])
+
+  const saveName = useCallback(() => {
+    const trimmedName = editingName.trim()
+    if (assetId) {
+      let finalName = trimmedName
+      if (!finalName) {
+        finalName = generateDefaultName(editor, assetId)
+      }
+      if (finalName !== displayName && asset) {
+        editor.updateAssets([{
+          ...asset,
+          props: { ...asset.props, name: finalName }
+        }])
+      }
+    }
+    setIsEditing(false)
+    setEditingName('')
+  }, [editingName, displayName, assetId, asset, editor])
+
+  const cancelEdit = useCallback(() => {
+    setIsEditing(false)
+    setEditingName('')
+  }, [])
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') saveName()
+    else if (e.key === 'Escape') cancelEdit()
+  }, [saveName, cancelEdit])
+
+  useEffect(() => {
+    setIsEditing(false)
+    setEditingName('')
+  }, [selectedShapeId])
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus()
+      inputRef.current.select()
+    }
+  }, [isEditing])
+
+  // ── 统一标注栏渲染 ──
+  // 渲染一个标注栏：定位在 shape 上方，左侧可选内容，右侧可选内容
+  // insideFrame: 如果 shape 在 frame 内，向上多偏移一个标签高度避开 frame heading
+  const renderAnnotationBar = (
+    key: string,
+    bounds: { x: number; y: number; w: number; h: number },
+    options: {
+      leftContent?: React.ReactNode
+      rightContent?: React.ReactNode
+      insideFrame?: boolean
+    }
+  ) => {
+    const extraOffset = options.insideFrame ? labelHeight : 0
+    return (
+      <div
+        key={key}
+        style={{
+          position: 'absolute',
+          left: bounds.x,
+          top: bounds.y - labelHeight - extraOffset,
+          width: bounds.w,
+          height: `${labelHeight}px`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: `${fontSize}px`,
+          lineHeight: `${labelHeight}px`,
+          color: '#3B82F6',
+          fontWeight: 500,
+          whiteSpace: 'nowrap',
+          pointerEvents: 'none',
+        }}
+      >
+        {options.leftContent && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{options.leftContent}</span>}
+        {!options.leftContent && <span />}
+        {options.rightContent && (
+          <span style={{ marginLeft: `${hGap}px`, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+            {options.rightContent}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {/* ── 所有 frame 的尺寸标注（使用缓存的 bounds） ── */}
+      {frameShapes.map(frameShape => {
+        const cachedData = frameDataCacheRef.current.get(frameShape.id)
+        if (!cachedData) return null
+        return renderAnnotationBar(
+          `frame-${frameShape.id}`,
+          cachedData.bounds,
+          { rightContent: cachedData.size }
+        )
+      })}
+
+      {/* ── 选中图片的标注（名称 + 尺寸） ── */}
+      {isSelectedImage && selectedBounds && (
+        isEditing ? (
+          // 编辑模式：显示输入框
+          <div
+            key="image-annotation"
+            style={{
+              position: 'absolute',
+              left: selectedBounds.x,
+              top: selectedBounds.y - labelHeight - (isImageInsideFrame ? labelHeight : 0),
+              width: selectedBounds.w,
+              height: `${labelHeight}px`,
+              display: 'flex',
+              alignItems: 'center',
+              fontSize: `${fontSize}px`,
+              lineHeight: `${labelHeight}px`,
+              pointerEvents: 'none',
+            }}
+          >
+            <input
+              ref={inputRef}
+              type="text"
+              value={editingName}
+              onChange={(e) => setEditingName(e.target.value)}
+              onBlur={saveName}
+              onKeyDown={handleKeyDown}
+              onMouseDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              size={Math.max(1, editingName.length)}
+              style={{
+                minWidth: `${60 / zoomLevel}px`,
+                maxWidth: `${200 / zoomLevel}px`,
+                width: 'auto',
+                background: '#ffffff',
+                border: `${1.5 / zoomLevel}px solid #3B82F6`,
+                borderRadius: `${4 / zoomLevel}px`,
+                padding: `${1 / zoomLevel}px ${padding}px`,
+                fontSize: `${fontSize}px`,
+                color: '#3B82F6',
+                fontWeight: 500,
+                outline: 'none',
+                pointerEvents: 'auto',
+                boxShadow: `0 0 0 ${2 / zoomLevel}px rgba(59, 130, 246, 0.2)`,
+                height: `${labelHeight}px`,
+              }}
+            />
+          </div>
+        ) : (
+          // 显示模式：名称 + 尺寸
+          renderAnnotationBar(
+            'image-annotation',
+            selectedBounds,
+            {
+              leftContent: (
+                <span
+                  style={{ overflow: 'hidden', textOverflow: 'ellipsis', pointerEvents: 'auto', cursor: 'pointer' }}
+                  onDoubleClick={handleDoubleClick}
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  {truncatedName}
+                </span>
+              ),
+              rightContent: imageSize,
+              insideFrame: isImageInsideFrame,
+            }
+          )
+        )
+      )}
+    </>
+  )
+})
 
 // ── Main canvas ─────────────────────────────────────────────────────────────
 
 export function CanvasArea() {
   const {
     canvasItems,
-    isEditingMode,
-    editingTarget,
     setEditingMode,
     addCanvasItem,
     updateCanvasItem,
     removeCanvasItem,
-    clearCanvas,
     editor,
     setEditor,
     selectedShapeIds,
@@ -88,22 +596,263 @@ export function CanvasArea() {
 
   const containerRef = useRef<HTMLDivElement>(null)
   const syncingRef = useRef(false)  // Prevent infinite sync loops
+  const bgPickerRef = useRef<HTMLDivElement>(null)
+  const zoomMenuRef = useRef<HTMLDivElement>(null)
+  const svPanelRef = useRef<HTMLDivElement>(null)
+
+  // === 修复1: RAF 节流状态同步 ===
+  // 收集待同步到 zustand 的 shape 位置/尺寸更新，每帧只批量同步一次
+  const pendingUpdatesRef = useRef<Map<string, Partial<CanvasItem>>>(new Map())
+  const syncRafRef = useRef<number | null>(null)
+  // 标记这次 canvasItems 变化来自 tldraw store listener（用于修复2）
+  const fromTldrawSyncRef = useRef(false)
+
+  // Background color state - using HSV internally for the picker
+  const [showBgPicker, setShowBgPicker] = useState(false)
+  const [bgColor, setBgColor] = useState('#F2F2F2') // 默认 95% 白色
+  const [hue, setHue] = useState(0)
+  const [saturation, setSaturation] = useState(0)
+  const [brightness, setBrightness] = useState(95) // 默认 #F2F2F2 对应的 HSV
+
+  // Zoom level state
+  const [zoomLevel, setZoomLevel] = useState(1)
+  const [showZoomMenu, setShowZoomMenu] = useState(false)
+
+  // Track if tldraw has any shapes (for empty state hint)
+  const [hasShapes, setHasShapes] = useState(false)
 
   // Track processed items to avoid re-creating shapes
   const processedItemsRef = useRef<Set<string>>(new Set())
+
+  // Track which items are currently in placeholder state (for detecting placeholder -> image transition)
+  const placeholderIdsRef = useRef<Set<string>>(new Set())
+
+  // Hide tldraw UI panels and register AnnotationOverlay
+  const tldrawComponents = useMemo<Partial<TLComponents>>(() => ({
+    StylePanel: null,
+    NavigationPanel: null,
+    Minimap: null,
+    Toolbar: null,
+    MenuPanel: null,    // 隐藏默认的左上角菜单面板
+    TopPanel: null,     // 隐藏默认的顶部面板
+    OnTheCanvas: AnnotationOverlay,  // 使用 OnTheCanvas，在相机变换层内
+    InFrontOfTheCanvas: () => (
+      <>
+        <TopBar />
+        <MarkerOverlay />
+      </>
+    ),  // 在画布前方渲染 TopBar 和 MarkerOverlay
+  }), [])
+
+  // Handle background color change
+  const handleBgColorChange = useCallback((color: string) => {
+    setBgColor(color)
+    const container = document.querySelector('.tl-background') as HTMLElement
+    if (container) {
+      container.style.backgroundColor = color
+    }
+  }, [])
+
+  // Update color when HSV values change
+  useEffect(() => {
+    const [r, g, b] = hsvToRgb(hue, saturation, brightness)
+    const hex = rgbToHex(r, g, b)
+    if (hex !== bgColor) {
+      handleBgColorChange(hex)
+    }
+  }, [hue, saturation, brightness, bgColor, handleBgColorChange])
+
+  // Handle hex input change - sync to HSV
+  const handleHexInput = useCallback((hex: string) => {
+    if (hex.length === 7) {
+      const [h, s, v] = hexToHsv(hex)
+      setHue(h)
+      setSaturation(s)
+      setBrightness(v)
+    }
+  }, [])
+
+  // Handle preset color click
+  const handlePresetColor = useCallback((color: string | null) => {
+    if (color === null) {
+      // "No fill" - use transparent or very light color
+      handleBgColorChange('#ffffff')
+      setHue(0)
+      setSaturation(0)
+      setBrightness(100)
+    } else {
+      handleHexInput(color)
+    }
+  }, [handleHexInput, handleBgColorChange])
+
+  // SV panel interaction
+  const handleSVInteraction = useCallback((e: React.MouseEvent | MouseEvent) => {
+    const panel = svPanelRef.current
+    if (!panel) return
+    const rect = panel.getBoundingClientRect()
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
+    setSaturation(x * 100)
+    setBrightness((1 - y) * 100)
+  }, [])
+
+  const handleSVMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    handleSVInteraction(e)
+    const handleMove = (ev: MouseEvent) => handleSVInteraction(ev)
+    const handleUp = () => {
+      document.removeEventListener('mousemove', handleMove)
+      document.removeEventListener('mouseup', handleUp)
+    }
+    document.addEventListener('mousemove', handleMove)
+    document.addEventListener('mouseup', handleUp)
+  }, [handleSVInteraction])
+
+  // Zoom handlers
+  const handleZoomIn = useCallback(() => {
+    const ed = useAppStore.getState().editor
+    if (ed) ed.zoomIn()
+  }, [])
+
+  const handleZoomOut = useCallback(() => {
+    const ed = useAppStore.getState().editor
+    if (ed) ed.zoomOut()
+  }, [])
+
+  const handleZoomToFit = useCallback(() => {
+    const ed = useAppStore.getState().editor
+    if (ed) ed.zoomToFit({ animation: { duration: 200 } })
+    setShowZoomMenu(false)
+  }, [])
+
+  const handleZoomTo = useCallback((level: number) => {
+    const ed = useAppStore.getState().editor
+    if (ed) {
+      const center = ed.getViewportScreenCenter()
+      if (level === 1) {
+        ed.resetZoom(center, { animation: { duration: 200 } })
+      } else {
+        // Get current camera position and set new zoom level
+        const camera = ed.getCamera()
+        ed.setCamera({ x: camera.x, y: camera.y, z: level }, { animation: { duration: 200 } })
+      }
+    }
+    setShowZoomMenu(false)
+  }, [])
+
+  // === RAF 节流批量同步函数（修复1）===
+  const flushPendingUpdates = useCallback(() => {
+    const updates = pendingUpdatesRef.current
+    if (updates.size === 0) {
+      syncRafRef.current = null
+      return
+    }
+    
+    fromTldrawSyncRef.current = true
+    const store = useAppStore.getState()
+    updates.forEach((patch, id) => {
+      store.updateCanvasItem(id, patch)
+    })
+    updates.clear()
+    syncRafRef.current = null
+    // 延迟重置标记
+    queueMicrotask(() => { fromTldrawSyncRef.current = false })
+  }, [])
+
+  // RAF 节流调度函数
+  const scheduleSync = useCallback((id: string, patch: Partial<CanvasItem>) => {
+    pendingUpdatesRef.current.set(id, {
+      ...pendingUpdatesRef.current.get(id),
+      ...patch,
+    })
+    if (syncRafRef.current === null) {
+      syncRafRef.current = requestAnimationFrame(flushPendingUpdates)
+    }
+  }, [flushPendingUpdates])
 
   // Handle editor mount
   const handleMount = useCallback((ed: Editor) => {
     setEditor(ed)
 
-    // Initial sync: create shapes for existing canvasItems
-    const currentItems = useAppStore.getState().canvasItems
-    currentItems.forEach((item) => {
-      if (!item.uploading || item.placeholder) {
-        createTldrawImageFromItem(ed, item)
-        processedItemsRef.current.add(item.id)
+    // 设置 tldraw UI 为亮色主题
+    ed.user.updateUserPreferences({ colorScheme: 'light' })
+
+    // 默认启用网格显示
+    ed.updateInstanceState({ isGridMode: true })
+
+    // 默认设置画布背景色为 95% 白色 (#F2F2F2)
+    requestAnimationFrame(() => {
+      const bgElement = document.querySelector('.tl-background') as HTMLElement
+      if (bgElement) {
+        bgElement.style.backgroundColor = '#F2F2F2'
       }
     })
+
+    // ── 监听 pointer 事件用于 marker 工具 ──
+    // 使用 DOM pointerup 事件监听，比 sideEffects.registerAfterChangeHandler 更可靠
+    const container = ed.getContainer()
+    
+    // 在 pointerdown 阶段拦截左键，阻止 tldraw 的默认 select/drag 行为
+    const handleMarkerPointerDown = (e: PointerEvent) => {
+      const { activeTool } = useAppStore.getState()
+      if (activeTool !== 'marker') return
+      if (e.button !== 0) return  // 只拦截左键，中键/右键正常传递给 tldraw
+      
+      // 阻止 tldraw 的默认 select/drag 行为
+      e.stopPropagation()
+    }
+    
+    const handleMarkerClick = (e: PointerEvent) => {
+      // 只响应左键点击（button === 0）
+      if (e.button !== 0) return
+      
+      const { activeTool, addMarker, markers } = useAppStore.getState()
+      if (activeTool !== 'marker') return
+      
+      if (markers.length >= 8) {
+        toast.warning('最多添加 8 个标记')
+        return
+      }
+      
+      // 获取当前页面坐标点
+      const point = ed.inputs.currentPagePoint
+      if (!point) return
+      
+      // 检测点击位置下的 shape，传入 hitInside: true 确保命中 shape 内部区域
+      const shapeAtPoint = ed.getShapeAtPoint(point, {
+        hitInside: true,
+      })
+      
+      if (!shapeAtPoint || shapeAtPoint.type !== 'image') return
+      
+      const bounds = ed.getShapePageBounds(shapeAtPoint.id)
+      if (!bounds || bounds.w === 0 || bounds.h === 0) return
+      
+      const itemId = shapeIdToCanvasItemId(shapeAtPoint.id)
+      
+      // 计算相对坐标，并 clamp 到 0-1 范围
+      const relativeX = Math.max(0, Math.min(1, (point.x - bounds.x) / bounds.w))
+      const relativeY = Math.max(0, Math.min(1, (point.y - bounds.y) / bounds.h))
+      
+      addMarker(itemId, relativeX, relativeY)
+    }
+    
+    // 用 capture 模式注册，在 tldraw 处理之前拦截
+    container.addEventListener('pointerdown', handleMarkerPointerDown, true)  // capture: true
+    container.addEventListener('pointerup', handleMarkerClick, true)  // capture: true
+
+    // Initial sync: create shapes for existing canvasItems
+    const currentItems = useAppStore.getState().canvasItems
+    const itemsToProcess = currentItems.filter(item => !item.uploading || item.placeholder)
+    Promise.all(itemsToProcess.map(async (item) => {
+      const shapeId = await createTldrawImageFromItem(ed, item)
+      if (shapeId) {
+        processedItemsRef.current.add(item.id)
+        if (item.placeholder) {
+          placeholderIdsRef.current.add(item.id)
+        }
+      }
+    }))
 
     // Listen for tldraw store changes
     const unsub = ed.store.listen((entry: TLStoreEventInfo) => {
@@ -111,22 +860,133 @@ export function CanvasArea() {
 
       const { changes } = entry
 
+      // Handle newly added shapes (tldraw native image drops, paste, etc.)
+      // These bypass handleExternalDrop so we must sync them into canvasItems here
+      if (changes.added) {
+        // First pass: process image shapes
+        Object.values(changes.added).forEach((added) => {
+          if (added.typeName !== 'shape') return
+          const shape = added as { id: TLShapeId; type: string; x: number; y: number; props?: { assetId?: TLAssetId; w?: number; h?: number } }
+          if (shape.type !== 'image') return
+          const itemId = shapeIdToCanvasItemId(shape.id)
+          if (processedItemsRef.current.has(itemId)) return
+          if (useAppStore.getState().canvasItems.find(i => i.id === itemId)) return
+          const assetId = shape.props?.assetId
+          const asset = assetId ? ed.getAsset(assetId) : null
+          const url = (asset?.props as { src?: string })?.src ?? ''
+          const fileName = (asset?.props as { name?: string })?.name
+          console.log('[CanvasArea] native drop asset:', asset, 'url:', url ? url.substring(0, 50) + '...' : '(empty)')
+          useAppStore.getState().addCanvasItem({
+            id: itemId,
+            url,
+            falUrl: null,
+            x: shape.x,
+            y: shape.y,
+            width: shape.props?.w ?? 400,
+            height: shape.props?.h ?? 400,
+            uploading: false,
+            fileName,
+          })
+          processedItemsRef.current.add(itemId)
+
+          // Fallback: if URL is empty and we have assetId, use polling retry mechanism
+          // This handles cases where asset is added asynchronously (max 5 attempts, 200ms interval)
+          if (!url && assetId) {
+            const retryGetUrl = (attempt: number) => {
+              setTimeout(() => {
+                if (syncingRef.current) {
+                  if (attempt < 5) retryGetUrl(attempt + 1)
+                  return
+                }
+                const delayedAsset = ed.getAsset(assetId)
+                const delayedSrc = (delayedAsset?.props as { src?: string })?.src
+                const delayedName = (delayedAsset?.props as { name?: string })?.name
+                if (delayedSrc) {
+                  syncingRef.current = true
+                  try {
+                    useAppStore.getState().updateCanvasItem(itemId, { 
+                      url: delayedSrc,
+                      ...(delayedName ? { fileName: delayedName } : {})
+                    })
+                    console.log('[CanvasArea] url recovered for', itemId, 'on attempt', attempt + 1)
+                  } finally {
+                    syncingRef.current = false
+                  }
+                } else if (attempt < 5) {
+                  retryGetUrl(attempt + 1)
+                } else {
+                  console.warn('[CanvasArea] failed to recover url for', itemId, 'after 5 attempts')
+                }
+              }, 200)
+            }
+            retryGetUrl(0)
+          }
+        })
+
+        // Second pass: process newly added assets and update any canvasItems with empty URLs
+        Object.values(changes.added).forEach((added) => {
+          if (added.typeName !== 'asset') return
+          const assetRecord = added as { id: TLAssetId; props?: { src?: string; name?: string } }
+          const assetSrc = assetRecord.props?.src
+          const assetName = assetRecord.props?.name
+          if (!assetSrc) return
+          console.log('[CanvasArea] new asset added:', assetRecord.id, 'src:', assetSrc.substring(0, 50) + '...')
+
+          // Find canvasItems with empty URL that might be using this asset
+          // Use queueMicrotask to avoid modifying zustand during tldraw store listener
+          queueMicrotask(() => {
+            if (syncingRef.current) return
+            const items = useAppStore.getState().canvasItems
+            items.forEach(item => {
+              if (item.url) return // Already has URL
+              const shapeId = canvasItemIdToShapeId(item.id)
+              const shape = ed.getShape(shapeId)
+              if (!shape || shape.type !== 'image') return
+              const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
+              if (shapeAssetId === assetRecord.id) {
+                console.log('[CanvasArea] asset match found, updating canvasItem', item.id, 'with url:', assetSrc.substring(0, 50) + '...')
+                syncingRef.current = true
+                try {
+                  useAppStore.getState().updateCanvasItem(item.id, { 
+                    url: assetSrc,
+                    ...(assetName ? { fileName: assetName } : {})
+                  })
+                } finally {
+                  syncingRef.current = false
+                }
+              }
+            })
+          })
+        })
+      }
+
       // Handle shape updates (position/size changes)
+      // 修复1: 使用 RAF 节流批量同步位置/尺寸更新，避免每帧多次 zustand setState
       if (changes.updated) {
         Object.values(changes.updated).forEach(([, after]) => {
           if (after.typeName !== 'shape') return
-          const shape = after as { id: TLShapeId; x: number; y: number; props?: { w?: number; h?: number } }
+          const shape = after as { id: TLShapeId; type?: string; x: number; y: number; props?: { assetId?: TLAssetId; w?: number; h?: number } }
           const itemId = shapeIdToCanvasItemId(shape.id)
           const existingItem = useAppStore.getState().canvasItems.find(i => i.id === itemId)
           if (existingItem && !existingItem.placeholder) {
-            syncingRef.current = true
-            useAppStore.getState().updateCanvasItem(itemId, {
+            // Check if url is empty and try to fetch from asset (for native drops where asset wasn't ready initially)
+            let newUrl: string | undefined
+            if (!existingItem.url && shape.type === 'image' && shape.props?.assetId) {
+              const asset = ed.getAsset(shape.props.assetId)
+              const assetSrc = (asset?.props as { src?: string })?.src
+              if (assetSrc) {
+                console.log('[CanvasArea] update: recovered url from asset for', itemId, 'url:', assetSrc.substring(0, 50) + '...')
+                newUrl = assetSrc
+              }
+            }
+            // 修复1: 使用 RAF 节流调度同步，每帧最多同步一次
+            scheduleSync(itemId, {
               x: shape.x,
               y: shape.y,
               width: shape.props?.w ?? existingItem.width,
               height: shape.props?.h ?? existingItem.height,
+              ...(newUrl ? { url: newUrl } : {}),
             })
-            syncingRef.current = false
           }
         })
       }
@@ -148,21 +1008,120 @@ export function CanvasArea() {
     })
 
     // Listen for selection changes
-    ed.store.listen(() => {
+    // 修复4: 添加值比较，只在选中状态实际变化时才更新
+    let prevSelectionKey = ''
+    const unsubSelection = ed.store.listen(() => {
       const ids = ed.getSelectedShapeIds().map(id => shapeIdToCanvasItemId(id))
+      const newKey = ids.join(',')
+      if (prevSelectionKey === newKey) return
+      prevSelectionKey = newKey
+      console.log('[CanvasArea] selection changed:', ids)
+      // 同时打印对应的 canvasItems 信息
+      const items = useAppStore.getState().canvasItems
+      const matched = ids.map(id => items.find(ci => ci.id === id))
+      console.log('[CanvasArea] matched canvasItems:', matched?.map(i => i ? { id: i.id, fileName: i.fileName, uploading: i.uploading, placeholder: i.placeholder } : null))
       setSelectedShapeIds(ids)
-    }, { source: 'user', scope: 'session' })
+    }, { source: 'user', scope: 'all' })
 
     return () => {
       unsub()
+      unsubSelection()
+      container.removeEventListener('pointerdown', handleMarkerPointerDown, true)  // capture
+      container.removeEventListener('pointerup', handleMarkerClick, true)  // capture
+      // 修复1: 清理 RAF
+      if (syncRafRef.current !== null) {
+        cancelAnimationFrame(syncRafRef.current)
+        syncRafRef.current = null
+      }
+      pendingUpdatesRef.current.clear()
     }
-  }, [setEditor, setSelectedShapeIds])
+  }, [setEditor, setSelectedShapeIds, scheduleSync])
 
   // Sync canvasItems changes to tldraw
+  // 修复2: 如果这次 canvasItems 变化来自 tldraw store listener，跳过反向同步
   useEffect(() => {
-    if (!editor || syncingRef.current) return
+    if (!editor || syncingRef.current || fromTldrawSyncRef.current) return
+
+    // 修复：isMounted 标志防止组件卸载后执行状态更新
+    let isMounted = true
+
+    // 检测 placeholder 状态变化：从 true 变为 false 的 items
+    const prevPlaceholderIds = placeholderIdsRef.current
+    const currentPlaceholderIds = new Set<string>()
+    const transitionItems: CanvasItem[] = []
 
     canvasItems.forEach((item) => {
+      // 更新当前 placeholder 状态追踪
+      if (item.placeholder) {
+        currentPlaceholderIds.add(item.id)
+      }
+
+      // 检测 placeholder -> image 过渡
+      // 条件：之前是 placeholder，现在不是，且有有效的 url
+      if (prevPlaceholderIds.has(item.id) && !item.placeholder && item.url) {
+        transitionItems.push(item)
+      }
+    })
+
+    // 更新 ref 中的追踪状态
+    placeholderIdsRef.current = currentPlaceholderIds
+
+    // 处理 placeholder -> image 过渡
+    transitionItems.forEach((item) => {
+      const shapeId = canvasItemIdToShapeId(item.id)
+      const existingShape = editor.getShape(shapeId)
+
+      if (existingShape && existingShape.type === 'geo') {
+        // 记住旧 shape 的位置（使用 tldraw 中的实际位置，而非 store 中的）
+        const oldX = existingShape.x
+        const oldY = existingShape.y
+        const oldW = (existingShape.props as { w?: number })?.w ?? item.width
+        const oldH = (existingShape.props as { h?: number })?.h ?? item.height
+
+        console.log('[CanvasArea] placeholder -> image transition for:', item.id, 'at position:', { x: oldX, y: oldY, w: oldW, h: oldH })
+
+        syncingRef.current = true
+
+        // 先删除旧的 geo 矩形（释放 shapeId）
+        editor.deleteShape(shapeId)
+
+        // 创建新的 image shape，使用保存的位置
+        const itemWithOldPosition = {
+          ...item,
+          x: oldX,
+          y: oldY,
+          width: oldW,
+          height: oldH,
+        }
+
+        createTldrawImageFromItem(editor, itemWithOldPosition).then((newShapeId) => {
+          if (!isMounted) return
+
+          if (newShapeId) {
+            processedItemsRef.current.add(item.id)
+            console.log('[CanvasArea] placeholder -> image transition successful for:', item.id)
+          } else {
+            console.warn('[CanvasArea] placeholder -> image transition failed for:', item.id)
+          }
+
+          queueMicrotask(() => {
+            if (!isMounted) return
+            syncingRef.current = false
+          })
+        }).catch((err) => {
+          console.error('[CanvasArea] Failed to transition placeholder to image:', err)
+          if (!isMounted) return
+          syncingRef.current = false
+        })
+      }
+    })
+
+    canvasItems.forEach((item) => {
+      // 跳过已经在过渡处理中处理过的 items
+      if (transitionItems.some(t => t.id === item.id)) {
+        return
+      }
+
       const shapeId = canvasItemIdToShapeId(item.id)
       const existingShape = editor.getShape(shapeId)
 
@@ -174,9 +1133,27 @@ export function CanvasArea() {
       if (!existingShape && !processedItemsRef.current.has(item.id)) {
         // Create new shape
         syncingRef.current = true
-        createTldrawImageFromItem(editor, item)
-        processedItemsRef.current.add(item.id)
-        syncingRef.current = false
+        createTldrawImageFromItem(editor, item).then((newShapeId) => {
+          if (!isMounted) return  // 组件已卸载，不执行后续操作
+          if (newShapeId) {
+            processedItemsRef.current.add(item.id)
+            // 如果是 placeholder，记录到追踪 ref 中
+            if (item.placeholder) {
+              placeholderIdsRef.current.add(item.id)
+            }
+          } else {
+            console.warn('[CanvasArea] Failed to create shape for item:', item.id)
+          }
+          // 延迟重置以避免 store listener 微任务中 syncingRef 已变 false
+          queueMicrotask(() => {
+            if (!isMounted) return
+            syncingRef.current = false
+          })
+        }).catch((err) => {
+          console.error('[CanvasArea] Error creating shape:', err)
+          if (!isMounted) return
+          syncingRef.current = false
+        })
       } else if (existingShape) {
         // Update existing shape position/size if needed
         const needsUpdate = 
@@ -210,17 +1187,11 @@ export function CanvasArea() {
               }
             })
           }
-          syncingRef.current = false
-        }
-
-        // Handle placeholder -> image conversion
-        if (existingShape.type === 'geo' && !item.placeholder && item.url) {
-          syncingRef.current = true
-          editor.deleteShape(shapeId)
-          processedItemsRef.current.delete(item.id)
-          createTldrawImageFromItem(editor, item)
-          processedItemsRef.current.add(item.id)
-          syncingRef.current = false
+          // 延迟重置以避免 store listener 微任务中 syncingRef 已变 false
+          queueMicrotask(() => {
+            if (!isMounted) return
+            syncingRef.current = false
+          })
         }
       }
     })
@@ -233,11 +1204,22 @@ export function CanvasArea() {
         if (editor.getShape(shapeId)) {
           syncingRef.current = true
           editor.deleteShape(shapeId)
-          syncingRef.current = false
+          // 延迟重置以避免 store listener 微任务中 syncingRef 已变 false
+          queueMicrotask(() => {
+            if (!isMounted) return
+            syncingRef.current = false
+          })
         }
         processedItemsRef.current.delete(itemId)
+        // 同时从 placeholder 追踪中移除
+        placeholderIdsRef.current.delete(itemId)
       }
     })
+
+    // 清理函数：标记组件已卸载
+    return () => {
+      isMounted = false
+    }
   }, [editor, canvasItems])
 
   // Handle selection for editing mode
@@ -246,18 +1228,28 @@ export function CanvasArea() {
       const itemId = selectedShapeIds[0]
       const item = canvasItems.find(i => i.id === itemId)
       if (item && !item.uploading && !item.placeholder) {
-        setEditingMode(true, {
-          id: item.id,
-          localUrl: item.url,
-          falUrl: item.falUrl ?? item.url,
-          name: `canvas-${item.id}.png`,
-          uploading: false,
-        })
+        // Only call setEditingMode if the target ID actually changed
+        const currentTarget = useAppStore.getState().editingTarget
+        if (currentTarget?.id !== item.id) {
+          console.log('[CanvasArea] setEditingMode for item:', item.id)
+          setEditingMode(true, {
+            id: item.id,
+            localUrl: item.url,
+            falUrl: item.falUrl ?? item.url,
+            name: `canvas-${item.id}.png`,
+            uploading: false,
+          })
+        }
       }
-    } else if (selectedShapeIds.length === 0 && editingTarget) {
-      setEditingMode(false, null)
+    } else if (selectedShapeIds.length === 0) {
+      // Only clear editing mode if currently active
+      const currentTarget = useAppStore.getState().editingTarget
+      if (currentTarget) {
+        console.log('[CanvasArea] clearing editingMode')
+        setEditingMode(false, null)
+      }
     }
-  }, [selectedShapeIds, canvasItems, setEditingMode, editingTarget])
+  }, [selectedShapeIds, canvasItems, setEditingMode])
 
   // File drop handler for external drops
   const handleExternalDrop = useCallback(
@@ -303,7 +1295,13 @@ export function CanvasArea() {
         const scale = Math.min(maxW / img.naturalWidth, maxW / img.naturalHeight, 1)
         const width = Math.round(img.naturalWidth * scale)
         const height = Math.round(img.naturalHeight * scale)
-        useAppStore.getState().updateCanvasItem(id, { width, height })
+        useAppStore.getState().updateCanvasItem(id, { 
+          width, 
+          height,
+          naturalWidth: img.naturalWidth,
+          naturalHeight: img.naturalHeight,
+          fileName: file.name,
+        })
       }
       img.src = localUrl
 
@@ -318,84 +1316,305 @@ export function CanvasArea() {
     [editor, addCanvasItem]
   )
 
-  const handleDownload = useCallback(() => {
-    const selectedItemId = selectedShapeIds[0]
-    const item = selectedItemId 
-      ? canvasItems.find((i) => i.id === selectedItemId) 
-      : canvasItems.filter((i) => !i.placeholder).at(-1)
-    if (!item) return
-    const a = document.createElement("a")
-    a.href = item.falUrl ?? item.url
-    a.download = `lovart-${Date.now()}.png`
-    a.click()
-  }, [selectedShapeIds, canvasItems])
-
-  const handleClear = useCallback(() => {
-    if (selectedShapeIds.length > 0 && editor) {
-      selectedShapeIds.forEach((itemId) => {
-        const shapeId = canvasItemIdToShapeId(itemId)
-        editor.deleteShape(shapeId)
-      })
-      setSelectedShapeIds([])
-      setEditingMode(false, null)
-    } else {
-      clearCanvas()
-      processedItemsRef.current.clear()
-      if (editor) {
-        editor.selectAll()
-        editor.deleteShapes(editor.getSelectedShapeIds())
+  // Click outside to close background picker
+  useEffect(() => {
+    if (!showBgPicker) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (bgPickerRef.current && !bgPickerRef.current.contains(e.target as Node)) {
+        setShowBgPicker(false)
       }
     }
-  }, [selectedShapeIds, editor, clearCanvas, setSelectedShapeIds, setEditingMode])
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showBgPicker])
 
-  const hasImages = canvasItems.some((i) => !i.placeholder)
+  // Click outside to close zoom menu
+  useEffect(() => {
+    if (!showZoomMenu) return
+    const handleClickOutside = (e: MouseEvent) => {
+      if (zoomMenuRef.current && !zoomMenuRef.current.contains(e.target as Node)) {
+        setShowZoomMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showZoomMenu])
+
+  // Listen to zoom level changes
+  useEffect(() => {
+    if (!editor) return
+    
+    // Set initial zoom level
+    setZoomLevel(editor.getZoomLevel())
+    
+    // Listen for camera changes to update zoom display
+    // 使用 requestAnimationFrame 节流，确保每帧最多更新一次
+    let rafId: number | null = null
+    
+    const unsub = editor.store.listen(() => {
+      if (rafId !== null) return  // 已有待执行的 RAF，跳过
+      rafId = requestAnimationFrame(() => {
+        const zoom = editor.getZoomLevel()
+        setZoomLevel(prev => prev === zoom ? prev : zoom)
+        rafId = null
+      })
+    }, { source: 'all', scope: 'session' })
+    
+    return () => {
+      unsub()
+      if (rafId !== null) cancelAnimationFrame(rafId)
+    }
+  }, [editor])
+
+  // Listen to shape changes for empty state hint
+  useEffect(() => {
+    if (!editor) return
+
+    const checkShapes = () => {
+      const shapes = editor.getCurrentPageShapes()
+      setHasShapes(shapes.length > 0)
+    }
+
+    // Initial check
+    checkShapes()
+
+    // Listen for document changes (shape add/remove)
+    // 使用 source: 'user' 避免程序化修改也触发检查
+    const unsub = editor.store.listen(checkShapes, { source: 'user', scope: 'document' })
+
+    return unsub
+  }, [editor])
 
   return (
-    <div
-      ref={containerRef}
-      className="relative flex flex-col h-full bg-zinc-950 border-r border-zinc-800"
-      onDrop={handleExternalDrop}
-      onDragOver={(e) => e.preventDefault()}
-    >
-      {/* tldraw canvas */}
-      <div className="flex-1 min-h-0" style={{ position: 'relative' }}>
-        <div style={{ position: 'absolute', inset: 0 }}>
-          <Tldraw
-            onMount={handleMount}
-            autoFocus
-          />
+    <>
+      <div
+        ref={containerRef}
+        className="relative flex flex-col h-full bg-zinc-950 border-r border-zinc-800"
+        onDrop={handleExternalDrop}
+        onDragOver={(e) => e.preventDefault()}
+      >
+        {/* tldraw canvas */}
+        <div className="flex-1 min-h-0" style={{ position: 'relative' }}>
+          <div style={{ position: 'absolute', inset: 0 }}>
+            <Tldraw
+              onMount={handleMount}
+              autoFocus
+              components={tldrawComponents}
+            />
+          </div>
+
+          {/* Empty state overlay */}
+          {!hasShapes && canvasItems.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+              <p className="text-sm text-zinc-500">Get started by typing your idea, or drop image here.</p>
+            </div>
+          )}
+
+          {/* Inline edit panel - self-positioning */}
+          <InlineEditPanel />
+
+          {/* Custom bottom toolbar */}
+          <Toolbar />
         </div>
 
-        {/* Empty state overlay */}
-        {!hasImages && canvasItems.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-zinc-600 pointer-events-none z-10">
-            <ImageIcon className="w-16 h-16" />
-            <p className="text-sm">拖入图片开始创作</p>
+      {/* 左下角自定义导航栏 */}
+      <div ref={bgPickerRef} className="absolute bottom-4 left-4 z-50 flex items-center">
+        {/* 统一容器 */}
+        <div className="flex items-center gap-1 px-2 py-1.5 rounded-lg">
+          {/* Canvas Background 按钮 */}
+          <CustomTooltip content="Canvas background" side="top">
+            <button
+              onClick={() => setShowBgPicker(!showBgPicker)}
+              className="w-7 h-7 flex items-center justify-center rounded hover:bg-zinc-700/60 transition-colors"
+            >
+              <div
+                className="w-4 h-4 rounded-full border border-zinc-500"
+                style={{ backgroundColor: bgColor }}
+              />
+            </button>
+          </CustomTooltip>
+          
+          {/* 分隔线 */}
+          <div className="w-px h-4 bg-zinc-600 mx-1" />
+          
+          {/* 缩放控制 - 整组 hover 显示胶囊背景 */}
+          <CustomTooltip content="Zoom" side="top">
+            <div className="flex items-center rounded-full hover:bg-black/[0.06] transition-colors">
+            <button
+              onClick={handleZoomOut}
+              className="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              <Minus className="w-3.5 h-3.5" />
+            </button>
+            
+            {/* 缩放百分比按钮和菜单 */}
+            <div ref={zoomMenuRef} className="relative">
+              <button
+                onClick={() => setShowZoomMenu(!showZoomMenu)}
+                className="text-xs text-zinc-400 hover:text-zinc-200 min-w-[3rem] text-center font-mono select-none transition-colors"
+              >
+                {Math.round(zoomLevel * 100)}%
+              </button>
+              
+              {/* 缩放菜单 */}
+              {showZoomMenu && (
+                <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-50 w-48 rounded-lg bg-zinc-900 border border-zinc-700/50 shadow-2xl py-1 overflow-hidden">
+                  <button
+                    onClick={() => { handleZoomIn(); setShowZoomMenu(false) }}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <span>Zoom In</span>
+                    <span className="text-xs text-zinc-500">⌘ +</span>
+                  </button>
+                  <button
+                    onClick={() => { handleZoomOut(); setShowZoomMenu(false) }}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <span>Zoom Out</span>
+                    <span className="text-xs text-zinc-500">⌘ -</span>
+                  </button>
+                  <button
+                    onClick={handleZoomToFit}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <span>Fit to Screen</span>
+                    <span className="text-xs text-zinc-500">⌘ 1</span>
+                  </button>
+                  
+                  <div className="border-t border-zinc-700/50 my-1" />
+                  
+                  <button
+                    onClick={() => handleZoomTo(0.5)}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <span>Zoom to 50%</span>
+                  </button>
+                  <button
+                    onClick={() => handleZoomTo(1)}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <span>Zoom to 100%</span>
+                  </button>
+                  <button
+                    onClick={() => handleZoomTo(2)}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <span>Zoom to 200%</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            
+            <button
+              onClick={handleZoomIn}
+              className="w-7 h-7 flex items-center justify-center text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+            </div>
+          </CustomTooltip>
+        </div>
+        
+        {/* Canvas Background 弹出面板 - 白色主题 */}
+        {showBgPicker && (
+          <div className="absolute bottom-12 left-0 w-64 rounded-xl bg-white shadow-2xl p-4 overflow-hidden">
+            {/* 标题栏 */}
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm font-medium text-zinc-800">Canvas Background</span>
+              <button
+                onClick={() => setShowBgPicker(false)}
+                className="text-zinc-400 hover:text-zinc-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* SV 色域面板 */}
+            <div
+              ref={svPanelRef}
+              className="relative w-full h-36 rounded-lg cursor-crosshair overflow-hidden mb-3"
+              style={{ backgroundColor: `hsl(${hue}, 100%, 50%)` }}
+              onMouseDown={handleSVMouseDown}
+            >
+              {/* 白色水平渐变 */}
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(to right, white, transparent)' }} />
+              {/* 黑色垂直渐变 */}
+              <div className="absolute inset-0" style={{ background: 'linear-gradient(to bottom, transparent, black)' }} />
+              {/* 选择器指示器 */}
+              <div
+                className="absolute w-4 h-4 rounded-full border-2 border-white shadow-md pointer-events-none"
+                style={{
+                  left: `${saturation}%`,
+                  top: `${100 - brightness}%`,
+                  transform: 'translate(-50%, -50%)',
+                  boxShadow: '0 0 0 1px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2)'
+                }}
+              />
+            </div>
+
+            {/* 色相滑条 */}
+            <div className="mb-3">
+              <input
+                type="range"
+                min="0"
+                max="360"
+                value={hue}
+                onChange={(e) => setHue(Number(e.target.value))}
+                className="hue-slider w-full h-3 rounded-full appearance-none cursor-pointer"
+                style={{
+                  background: 'linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)',
+                }}
+              />
+            </div>
+
+            {/* 预设颜色 */}
+            <div className="flex items-center gap-2 mb-4">
+              {/* 无填充按钮 */}
+              <button
+                onClick={() => handlePresetColor(null)}
+                className="relative w-6 h-6 rounded-full border border-zinc-300 bg-white overflow-hidden hover:scale-110 transition-transform"
+                title="No fill"
+              >
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="w-full h-0.5 bg-red-500 rotate-45 origin-center" />
+                </div>
+              </button>
+              {/* 预设颜色 */}
+              {['#000000', '#00ff00', '#7C3AED', '#C4B5FD', '#0a0a0a', '#1a1a2e'].map((color) => (
+                <button
+                  key={color}
+                  onClick={() => handlePresetColor(color)}
+                  className={`w-6 h-6 rounded-full border transition-transform hover:scale-110 ${
+                    bgColor.toLowerCase() === color.toLowerCase() ? 'border-zinc-800 ring-2 ring-zinc-400' : 'border-zinc-300'
+                  }`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </div>
+
+            {/* HEX 输入和不透明度 */}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 flex-1 min-w-0">
+                <span className="text-xs text-zinc-500 font-medium shrink-0">#</span>
+                <input
+                  type="text"
+                  value={bgColor.replace('#', '').toUpperCase()}
+                  onChange={(e) => {
+                    const hex = e.target.value.replace(/[^0-9a-fA-F]/g, '').slice(0, 6)
+                    if (hex.length === 6) {
+                      handleHexInput('#' + hex)
+                    }
+                  }}
+                  className="flex-1 min-w-0 bg-zinc-100 text-zinc-800 text-xs px-2 py-1.5 rounded border border-zinc-200 font-mono"
+                  maxLength={6}
+                />
+              </div>
+              <span className="text-xs text-zinc-600 font-medium shrink-0 whitespace-nowrap">100%</span>
+            </div>
           </div>
         )}
-
-        {/* Inline edit panel - self-positioning */}
-        <InlineEditPanel />
-      </div>
-
-      {/* Bottom controls */}
-      <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-800">
-        <span className="text-xs font-medium px-2 py-1 rounded-full bg-zinc-800 text-zinc-400">
-          {isEditingMode ? "编辑模式" : "创建模式"}
-        </span>
-        <div className="flex gap-2">
-          {hasImages && (
-            <Button size="sm" variant="ghost" onClick={handleDownload} className="text-zinc-400 hover:text-zinc-100">
-              <Download className="w-4 h-4 mr-1" /> 下载
-            </Button>
-          )}
-          {(canvasItems.length > 0 || isEditingMode) && (
-            <Button size="sm" variant="ghost" onClick={handleClear} className="text-zinc-400 hover:text-zinc-100">
-              <X className="w-4 h-4 mr-1" /> {selectedShapeIds.length > 0 ? "删除" : "清除"}
-            </Button>
-          )}
-        </div>
       </div>
     </div>
+    </>
   )
 }

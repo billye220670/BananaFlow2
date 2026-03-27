@@ -44,9 +44,10 @@ try {
 
 Write-Host ""
 
-# 检查 node_modules 目录和 next 是否已安装
+# 检查 node_modules 目录和关键依赖是否已安装
 $nodeModulesPath = Join-Path $scriptDir "node_modules"
 $nextPath = Join-Path $nodeModulesPath "next"
+$tldrawPath = Join-Path $nodeModulesPath "tldraw"
 $packageLockPath = Join-Path $nodeModulesPath ".package-lock.json"
 
 $needInstall = $false
@@ -56,6 +57,9 @@ if (-not (Test-Path $nodeModulesPath)) {
     $needInstall = $true
 } elseif (-not (Test-Path $nextPath)) {
     Write-Host "[提示] next 未安装，需要安装依赖" -ForegroundColor Yellow
+    $needInstall = $true
+} elseif (-not (Test-Path $tldrawPath)) {
+    Write-Host "[提示] tldraw 未安装，需要安装依赖" -ForegroundColor Yellow
     $needInstall = $true
 } elseif (-not (Test-Path $packageLockPath)) {
     Write-Host "[提示] 依赖可能不完整，需要重新安装" -ForegroundColor Yellow

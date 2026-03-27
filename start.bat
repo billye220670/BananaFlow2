@@ -41,7 +41,7 @@ for /f "tokens=*" %%i in ('npm --version') do echo [成功] npm 版本: %%i
 
 echo.
 
-:: 检查 node_modules 目录和 next 是否已安装
+:: 检查 node_modules 目录和关键依赖是否已安装
 set "NEED_INSTALL=0"
 
 if not exist "node_modules" (
@@ -49,6 +49,9 @@ if not exist "node_modules" (
     set "NEED_INSTALL=1"
 ) else if not exist "node_modules\next" (
     echo [提示] next 未安装，需要安装依赖
+    set "NEED_INSTALL=1"
+) else if not exist "node_modules\tldraw" (
+    echo [提示] tldraw 未安装，需要安装依赖
     set "NEED_INSTALL=1"
 ) else if not exist "node_modules\.package-lock.json" (
     echo [提示] 依赖可能不完整，需要重新安装
