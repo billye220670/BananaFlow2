@@ -18,9 +18,79 @@ import {
 import { nanoid } from 'nanoid'
 import { CustomTooltip } from '@/components/ui/tooltip'
 import { useAppStore } from '@/lib/store'
-import { generateImage } from '@/lib/fal'
+import { generateImage, getImageDimensions, uploadFile } from '@/lib/fal'
 import type { CanvasItem } from '@/lib/types'
 import { MessageHistory } from './MessageHistory'
+
+// ============ 空位查找辅助函数 ============
+
+/** 检查矩形是否与现有 canvasItems 重叠 */
+function hasOverlap(
+  items: CanvasItem[],
+  x: number,
+  y: number,
+  w: number,
+  h: number
+): boolean {
+  return items.some(item => {
+    return (
+      x < item.x + item.width &&
+      x + w > item.x &&
+      y < item.y + item.height &&
+      y + h > item.y
+    )
+  })
+}
+
+/** 为新占位图查找空位，避免与现有图片重叠 */
+function findEmptyPosition(
+  existingItems: CanvasItem[],
+  newW: number,
+  newH: number,
+  fallbackX: number,
+  fallbackY: number,
+  gap: number = 40
+): { x: number; y: number } {
+  // 画布为空时，使用 fallback 位置（视口中心）
+  if (existingItems.length === 0) {
+    return { x: fallbackX, y: fallbackY }
+  }
+
+  // 找到最右侧的图片
+  const rightmostItem = existingItems.reduce((max, item) =>
+    (item.x + item.width) > (max.x + max.width) ? item : max
+  )
+
+  // 尝试方向：右 → 下 → 左 → 上
+  const directions = [
+    // 右侧：紧贴最右侧图片的右边
+    { x: rightmostItem.x + rightmostItem.width + gap, y: rightmostItem.y },
+    // 下方：紧贴最右侧图片的下边
+    { x: rightmostItem.x, y: rightmostItem.y + rightmostItem.height + gap },
+    // 左侧：在最右侧图片的左边
+    { x: rightmostItem.x - newW - gap, y: rightmostItem.y },
+    // 上方：在最右侧图片的上边
+    { x: rightmostItem.x, y: rightmostItem.y - newH - gap },
+  ]
+
+  for (const pos of directions) {
+    if (!hasOverlap(existingItems, pos.x, pos.y, newW, newH)) {
+      return pos
+    }
+  }
+
+  // 所有方向都被占，找到整体边界框的最右侧外面
+  const overallRight = existingItems.reduce(
+    (max, item) => Math.max(max, item.x + item.width),
+    -Infinity
+  )
+  const overallTop = existingItems.reduce(
+    (min, item) => Math.min(min, item.y),
+    Infinity
+  )
+
+  return { x: overallRight + gap, y: overallTop }
+}
 import { SelectionBadge } from './SelectionBadge'
 
 // Resolution options
@@ -187,10 +257,122 @@ export function ChatPanel() {
       finalPrompt = markerPrefix + prompt
     }
 
-    // 1. 收集参考图 URL（FAL 客户端可以直接处理 blob URL，无需手动上传）
-    const referenceUrls = displayBadges
-      .map(item => item.falUrl || item.url)  // 优先用 falUrl，没有则用 url（blob URL 也行）
-      .filter((url): url is string => !!url)
+    // 1. 收集参考图 URL
+    // blob URL 需要先上传到 FAL storage 获取公开 URL，因为 FAL API 只接受公开可访问的 HTTPS URL
+    const referenceUrls: string[] = []
+    for (const badge of displayBadges) {
+      // 优先使用 store 中最新的 CanvasItem（确保 falUrl 是最新的）
+      // displayBadges 可能来自 lockedItems（快照），其 falUrl 可能是旧的 null
+      const item = currentCanvasItems.find(i => i.id === badge.id) ?? badge
+      
+      // 如果已有 falUrl（之前上传过），直接使用
+      if (item.falUrl) {
+        referenceUrls.push(item.falUrl)
+        continue
+      }
+      
+      const url = item.url
+      if (!url) continue
+      
+      // 如果是 blob URL，需要上传到 FAL storage
+      if (url.startsWith('blob:')) {
+        try {
+          console.log('[handleSend] Uploading blob URL to FAL storage:', url.substring(0, 50))
+          const response = await fetch(url)
+          const blob = await response.blob()
+          const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
+          const falStorageUrl = await uploadFile(file)
+          
+          // 更新 item 的 falUrl，避免下次重复上传
+          updateCanvasItem(item.id, { falUrl: falStorageUrl })
+          referenceUrls.push(falStorageUrl)
+          console.log('[handleSend] Blob uploaded successfully:', falStorageUrl.substring(0, 80))
+        } catch (error) {
+          console.error('[handleSend] Failed to upload blob URL:', url.substring(0, 50), error)
+          // 跳过该项，不阻断整个流程
+        }
+      } else if (url.startsWith('https://') || url.startsWith('http://')) {
+        // 已经是公开 URL，直接使用
+        referenceUrls.push(url)
+      } else if (url.startsWith('data:')) {
+        // data: URL（如 tldraw asset）需要转换为 Blob 再上传
+        try {
+          console.log('[handleSend] Converting data URL to blob and uploading...')
+          const response = await fetch(url)
+          const blob = await response.blob()
+          const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
+          const falStorageUrl = await uploadFile(file)
+          
+          // 更新 item 的 falUrl，避免下次重复上传
+          updateCanvasItem(item.id, { falUrl: falStorageUrl })
+          referenceUrls.push(falStorageUrl)
+          console.log('[handleSend] Data URL uploaded successfully:', falStorageUrl.substring(0, 80))
+        } catch (error) {
+          console.error('[handleSend] Failed to upload data URL:', error)
+        }
+      }
+    }
+    
+    // 收集 marker 对应的 CanvasItem 图片 URL
+    // marker 标记的是画布上的主图片，这些图片的 URL 也需要传给 FAL API
+    if (currentMarkers.length > 0) {
+      // 已添加的 item id 集合，避免重复添加
+      const addedItemIds = new Set(displayBadges.map(b => b.id))
+      
+      for (const marker of currentMarkers) {
+        const item = currentCanvasItems.find(i => i.id === marker.itemId)
+        if (!item) continue
+        
+        // 避免重复添加（如果 displayBadges 已包含该 item）
+        if (addedItemIds.has(item.id)) continue
+        addedItemIds.add(item.id)
+        
+        // 优先使用 falUrl
+        if (item.falUrl) {
+          referenceUrls.push(item.falUrl)
+          continue
+        }
+        
+        const url = item.url
+        if (!url) continue
+        
+        // 如果是 blob URL，需要上传到 FAL storage
+        if (url.startsWith('blob:')) {
+          try {
+            console.log('[handleSend] Uploading marker image blob URL to FAL storage:', url.substring(0, 50))
+            const response = await fetch(url)
+            const blob = await response.blob()
+            const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
+            const falStorageUrl = await uploadFile(file)
+            
+            // 更新 item 的 falUrl，避免下次重复上传
+            updateCanvasItem(item.id, { falUrl: falStorageUrl })
+            referenceUrls.push(falStorageUrl)
+            console.log('[handleSend] Marker image blob uploaded successfully:', falStorageUrl.substring(0, 80))
+          } catch (error) {
+            console.error('[handleSend] Failed to upload marker image blob URL:', url.substring(0, 50), error)
+          }
+        } else if (url.startsWith('https://') || url.startsWith('http://')) {
+          referenceUrls.push(url)
+        } else if (url.startsWith('data:')) {
+          // data: URL（如 tldraw asset）需要转换为 Blob 再上传
+          try {
+            console.log('[handleSend] Converting marker image data URL to blob and uploading...')
+            const response = await fetch(url)
+            const blob = await response.blob()
+            const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
+            const falStorageUrl = await uploadFile(file)
+            
+            // 更新 item 的 falUrl，避免下次重复上传
+            updateCanvasItem(item.id, { falUrl: falStorageUrl })
+            referenceUrls.push(falStorageUrl)
+            console.log('[handleSend] Marker image data URL uploaded successfully:', falStorageUrl.substring(0, 80))
+          } catch (error) {
+            console.error('[handleSend] Failed to upload marker image data URL:', error)
+          }
+        }
+      }
+    }
     
     console.log('[handleSend] Collected referenceUrls:', referenceUrls.map(u => u.substring(0, 80)))
     
@@ -213,30 +395,65 @@ export function ChatPanel() {
     console.log('[handleSend] resolution:', resolution)
 
     // 2. 计算占位图画布显示尺寸
-    const basePixels: Record<string, number> = { '1K': 1024, '2K': 2048, '4K': 4096 }
-    const base = basePixels[resolution] || 1024
-    
-    // 处理 auto 情况：占位阶段不知道实际比例，用正方形作为占位
-    let wRatio = 1, hRatio = 1
-    if (aspectRatio !== 'auto' && aspectRatio.includes(':')) {
-      [wRatio, hRatio] = aspectRatio.split(':').map(Number)
-    }
-    const ratio = wRatio / hRatio
-
-    let genW: number, genH: number
-    if (ratio >= 1) {
-      genW = base
-      genH = Math.round(base / ratio)
-    } else {
-      genH = base
-      genW = Math.round(base * ratio)
-    }
-
-    // 缩放到画布显示尺寸 (max 480px)
     const maxDisplay = 480
-    const scale = Math.min(maxDisplay / genW, maxDisplay / genH, 1)
-    const displayW = Math.round(genW * scale)
-    const displayH = Math.round(genH * scale)
+    let displayW = maxDisplay, displayH = maxDisplay // 默认正方形
+
+    // 占位图尺寸确定规则：
+    // 1. 有参考图：直接使用参考图在画布上的实际显示尺寸（与参考图一样大）
+    // 2. 无参考图 + 用户指定比例（非 auto）：按指定比例计算
+    // 3. 无参考图 + auto：正方形占位
+
+    if (referenceUrls.length > 0) {
+      // 有参考图：优先使用参考图在画布上的实际显示尺寸
+      const firstRef = displayBadges[0]
+      
+      if (firstRef?.width && firstRef?.height) {
+        // 直接使用参考图的画布显示尺寸，保持占位图与参考图一样大
+        displayW = firstRef.width
+        displayH = firstRef.height
+        console.log('[handleSend] 使用参考图画布尺寸:', { displayW, displayH })
+      } else {
+        // fallback：如果没有画布尺寸，尝试用 naturalWidth/naturalHeight 缩放到 480px
+        let refWidth = firstRef?.naturalWidth
+        let refHeight = firstRef?.naturalHeight
+
+        // 如果 CanvasItem 中没有 naturalWidth/naturalHeight，尝试加载图片获取
+        if (!refWidth || !refHeight) {
+          try {
+            const dims = await getImageDimensions(referenceUrls[0])
+            refWidth = dims.width
+            refHeight = dims.height
+          } catch (e) {
+            console.warn('[handleSend] Failed to get reference image dimensions:', e)
+            // 加载失败，使用默认正方形
+          }
+        }
+
+        if (refWidth && refHeight) {
+          const ratio = refWidth / refHeight
+          if (ratio >= 1) {
+            displayW = maxDisplay
+            displayH = Math.round(maxDisplay / ratio)
+          } else {
+            displayH = maxDisplay
+            displayW = Math.round(maxDisplay * ratio)
+          }
+        }
+        console.log('[handleSend] 使用 fallback 缩放尺寸:', { displayW, displayH })
+      }
+    } else if (aspectRatio !== 'auto' && aspectRatio.includes(':')) {
+      // 无参考图 + 用户指定比例
+      const [wRatio, hRatio] = aspectRatio.split(':').map(Number)
+      const ratio = wRatio / hRatio
+      if (ratio >= 1) {
+        displayW = maxDisplay
+        displayH = Math.round(maxDisplay / ratio)
+      } else {
+        displayH = maxDisplay
+        displayW = Math.round(maxDisplay * ratio)
+      }
+    }
+    // else: auto + 无参考图 → 保持 480x480 正方形
 
     // 3. 生成唯一ID
     const msgId = nanoid()
@@ -260,16 +477,28 @@ export function ChatPanel() {
     })
 
     // 6. 在画布上创建占位 CanvasItem
-    // 计算放置位置：使用画布视口中心
-    // 尝试从 store 获取 editor 来计算视口中心
+    // 计算放置位置：自动查找空位，避免与现有图片重叠
     const editor = useAppStore.getState().editor
-    let cx = 100, cy = 100
+    const currentItems = useAppStore.getState().canvasItems
+    
+    // 计算 fallback 位置（视口中心）
+    let fallbackX = 100, fallbackY = 100
     if (editor) {
       const vp = editor.getViewportScreenBounds()
       const pageCenter = editor.screenToPage({ x: vp.midX, y: vp.midY })
-      cx = pageCenter.x - displayW / 2
-      cy = pageCenter.y - displayH / 2
+      fallbackX = pageCenter.x - displayW / 2
+      fallbackY = pageCenter.y - displayH / 2
     }
+    
+    // 查找空位（优先右侧，避免重叠）
+    const { x: cx, y: cy } = findEmptyPosition(
+      currentItems,
+      displayW,
+      displayH,
+      fallbackX,
+      fallbackY,
+      40 // gap
+    )
 
     addCanvasItem({
       id: itemId,
@@ -297,21 +526,20 @@ export function ChatPanel() {
       })
       const resultUrl = result.url
 
-      // 计算显示尺寸：使用 FAL 返回的实际宽高
-      const maxDisplaySize = 480
-      const scaleResult = Math.min(maxDisplaySize / result.width, maxDisplaySize / result.height, 1)
-      const newDisplayW = Math.round(result.width * scaleResult)
-      const newDisplayH = Math.round(result.height * scaleResult)
+      // 防御性处理：如果 FAL 返回的宽高仍为 0 或 falsy，使用占位图尺寸作为 fallback
+      const finalWidth = result.width || displayW
+      const finalHeight = result.height || displayH
 
-      // 成功：更新画布项和消息，使用实际宽高
+      // 成功：更新画布项和消息
+      // 保持占位图的原始显示尺寸（displayW/displayH），FAL返回的实际尺寸只存入naturalWidth/naturalHeight
       updateCanvasItem(itemId, {
         url: resultUrl,
         falUrl: resultUrl,
         placeholder: false,
-        width: newDisplayW,
-        height: newDisplayH,
-        naturalWidth: result.width,
-        naturalHeight: result.height,
+        width: displayW,
+        height: displayH,
+        naturalWidth: finalWidth,
+        naturalHeight: finalHeight,
       })
 
       updateMessage(msgId, {
@@ -321,10 +549,12 @@ export function ChatPanel() {
       })
     } catch (error) {
       // 失败：移除画布占位项，更新消息为错误
+      console.error('[ChatPanel] generateImage 失败:', error)
+      console.error('[ChatPanel] 错误详情:', JSON.stringify(error, Object.getOwnPropertyNames(error as object), 2))
       removeCanvasItem(itemId)
       updateMessage(msgId, {
         loading: false,
-        content: `生成失败: ${error instanceof Error ? error.message : '未知错误'}`,
+        content: `生成失败: ${error instanceof Error ? error.message : String(error)}`,
       })
     } finally {
       setLoading(false)

@@ -95,6 +95,7 @@ async function createTldrawImageFromItem(editor: Editor, item: CanvasItem): Prom
         type: 'geo',
         x: item.x,
         y: item.y,
+        opacity: 0,
         props: {
           w: item.width || 400,
           h: item.height || 400,
@@ -133,6 +134,7 @@ async function createTldrawImageFromItem(editor: Editor, item: CanvasItem): Prom
   try {
     // Create asset for image
     const assetId = AssetRecordType.createId()
+    
     editor.createAssets([{
       id: assetId,
       type: 'image',
@@ -150,6 +152,7 @@ async function createTldrawImageFromItem(editor: Editor, item: CanvasItem): Prom
 
     // Create image shape
     const shapeId = canvasItemIdToShapeId(item.id)
+    
     editor.createShape({
       id: shapeId,
       type: 'image',
@@ -579,6 +582,70 @@ const AnnotationOverlay = track(() => {
   )
 })
 
+// ── PlaceholderShimmerOverlay: 在占位图上显示 shimmer 加载动画 ──
+// 渲染在 InFrontOfTheCanvas 层，坐标需要从页面坐标转换为视口坐标
+const PlaceholderShimmerOverlay = track(function PlaceholderShimmerOverlay() {
+  const editor = useEditor()
+  
+  // 建立响应式依赖 - shapes 变化和相机变化都需要重渲染
+  editor.getCurrentPageShapes()
+  const camera = editor.getCamera()
+  const zoom = camera.z
+  
+  const canvasItems = useAppStore.getState().canvasItems
+  const placeholderItems = canvasItems.filter(item => item.placeholder)
+  
+  if (placeholderItems.length === 0) return null
+  
+  return (
+    <>
+      {placeholderItems.map(item => {
+        const shapeId = canvasItemIdToShapeId(item.id)
+        if (!editor.getShape(shapeId)) return null
+        
+        const bounds = editor.getShapePageBounds(shapeId)
+        if (!bounds) return null
+        
+        // 页面坐标 → 视口坐标
+        const screenX = (bounds.x + camera.x) * zoom
+        const screenY = (bounds.y + camera.y) * zoom
+        const screenW = bounds.w * zoom
+        const screenH = bounds.h * zoom
+        
+        return (
+          <div
+            key={item.id}
+            style={{
+              position: 'absolute',
+              left: screenX,
+              top: screenY,
+              width: screenW,
+              height: screenH,
+              backgroundColor: '#e5e5e5',
+              border: `${1 * zoom}px solid #ccc`,
+              pointerEvents: 'none',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: 1 * zoom,
+                top: 1 * zoom,
+                right: 1 * zoom,
+                bottom: 1 * zoom,
+                background: 'linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.6) 50%, rgba(255,255,255,0) 100%)',
+                backgroundSize: '600px 100%',
+                animation: 'shimmer 1.5s infinite linear',
+              }}
+            />
+          </div>
+        )
+      })}
+    </>
+  )
+})
+
 // ── Main canvas ─────────────────────────────────────────────────────────────
 
 export function CanvasArea() {
@@ -627,6 +694,10 @@ export function CanvasArea() {
   // Track which items are currently in placeholder state (for detecting placeholder -> image transition)
   const placeholderIdsRef = useRef<Set<string>>(new Set())
 
+  // 保护机制：记录刚完成 placeholder → image 过渡的 item，防止 tldraw store listener 覆盖尺寸
+  // 这些 item 在短时间内不会被 tldraw 同步覆盖尺寸
+  const recentlyTransitionedRef = useRef<Set<string>>(new Set())
+
   // Hide tldraw UI panels and register AnnotationOverlay
   const tldrawComponents = useMemo<Partial<TLComponents>>(() => ({
     StylePanel: null,
@@ -635,13 +706,18 @@ export function CanvasArea() {
     Toolbar: null,
     MenuPanel: null,    // 隐藏默认的左上角菜单面板
     TopPanel: null,     // 隐藏默认的顶部面板
-    OnTheCanvas: AnnotationOverlay,  // 使用 OnTheCanvas，在相机变换层内
+    OnTheCanvas: () => (
+          <>
+            <AnnotationOverlay />
+          </>
+        ),  // 使用 OnTheCanvas，在相机变换层内
     InFrontOfTheCanvas: () => (
       <>
         <TopBar />
         <MarkerOverlay />
+        <PlaceholderShimmerOverlay />
       </>
-    ),  // 在画布前方渲染 TopBar 和 MarkerOverlay
+    ),  // 在画布前方渲染 TopBar、MarkerOverlay 和 PlaceholderShimmerOverlay
   }), [])
 
   // Handle background color change
@@ -969,6 +1045,9 @@ export function CanvasArea() {
           const itemId = shapeIdToCanvasItemId(shape.id)
           const existingItem = useAppStore.getState().canvasItems.find(i => i.id === itemId)
           if (existingItem && !existingItem.placeholder) {
+            // 保护机制：刚完成 placeholder → image 过渡的 item 不同步尺寸，只同步位置
+            const isRecentlyTransitioned = recentlyTransitionedRef.current.has(itemId)
+            
             // Check if url is empty and try to fetch from asset (for native drops where asset wasn't ready initially)
             let newUrl: string | undefined
             if (!existingItem.url && shape.type === 'image' && shape.props?.assetId) {
@@ -980,13 +1059,22 @@ export function CanvasArea() {
               }
             }
             // 修复1: 使用 RAF 节流调度同步，每帧最多同步一次
-            scheduleSync(itemId, {
-              x: shape.x,
-              y: shape.y,
-              width: shape.props?.w ?? existingItem.width,
-              height: shape.props?.h ?? existingItem.height,
-              ...(newUrl ? { url: newUrl } : {}),
-            })
+            // 如果是刚过渡的 item，只同步位置，不同步尺寸（防止 tldraw 覆盖正确的比例尺寸）
+            if (isRecentlyTransitioned) {
+              scheduleSync(itemId, {
+                x: shape.x,
+                y: shape.y,
+                ...(newUrl ? { url: newUrl } : {}),
+              })
+            } else {
+              scheduleSync(itemId, {
+                x: shape.x,
+                y: shape.y,
+                width: shape.props?.w ?? existingItem.width,
+                height: shape.props?.h ?? existingItem.height,
+                ...(newUrl ? { url: newUrl } : {}),
+              })
+            }
           }
         })
       }
@@ -1061,13 +1149,7 @@ export function CanvasArea() {
       if (prevPlaceholderIds.has(item.id) && !item.placeholder && item.url) {
         transitionItems.push(item)
       }
-    })
-
-    // 更新 ref 中的追踪状态
-    placeholderIdsRef.current = currentPlaceholderIds
-
-    // 处理 placeholder -> image 过渡
-    transitionItems.forEach((item) => {
+      
       const shapeId = canvasItemIdToShapeId(item.id)
       const existingShape = editor.getShape(shapeId)
 
@@ -1081,6 +1163,12 @@ export function CanvasArea() {
         const newH = item.height
 
         console.log('[CanvasArea] placeholder -> image transition for:', item.id, 'at position:', { x: oldX, y: oldY, w: newW, h: newH })
+
+        // 【修复】在调用 createTldrawImageFromItem 之前就设置保护机制！
+        // 因为 editor.createShape() 会同步触发 store listener，
+        // 如果保护机制在 .then() 中设置就太晚了
+        recentlyTransitionedRef.current.add(item.id)
+        console.log('[CanvasArea] protection added BEFORE shape creation for:', item.id)
 
         syncingRef.current = true
 
@@ -1096,14 +1184,26 @@ export function CanvasArea() {
           height: newH,
         }
 
+        // G: createTldrawImageFromItem 调用前（保留此日志用于调试）
+        // 尺寸使用 item 的最新值（store 中已更新为 FAL API 返回的实际比例尺寸）
+
         createTldrawImageFromItem(editor, itemWithUpdatedSize).then((newShapeId) => {
           if (!isMounted) return
 
           if (newShapeId) {
             processedItemsRef.current.add(item.id)
-            console.log('[CanvasArea] placeholder -> image transition successful for:', item.id)
+            console.log('[CanvasArea] placeholder -> image transition successful for:', item.id, 'with size:', { w: newW, h: newH })
+            
+            // 1000ms 后移除保护，允许正常的尺寸同步（如用户手动调整）
+            // 延长保护时间以确保 tldraw 内部的异步更新完成
+            setTimeout(() => {
+              recentlyTransitionedRef.current.delete(item.id)
+              console.log('[CanvasArea] protection removed for:', item.id)
+            }, 1000)
           } else {
             console.warn('[CanvasArea] placeholder -> image transition failed for:', item.id)
+            // 失败时移除保护
+            recentlyTransitionedRef.current.delete(item.id)
           }
 
           queueMicrotask(() => {
@@ -1112,6 +1212,8 @@ export function CanvasArea() {
           })
         }).catch((err) => {
           console.error('[CanvasArea] Failed to transition placeholder to image:', err)
+          // 失败时移除保护
+          recentlyTransitionedRef.current.delete(item.id)
           if (!isMounted) return
           syncingRef.current = false
         })
@@ -1310,8 +1412,10 @@ export function CanvasArea() {
       try {
         const falUrl = await uploadFile(file)
         useAppStore.getState().updateCanvasItem(id, { falUrl, uploading: false })
-      } catch {
-        toast.error("上传失败，请检查 FAL_KEY 并重启服务")
+      } catch (error) {
+        console.error('[CanvasArea] 文件上传失败:', error)
+        console.error('[CanvasArea] 错误详情:', JSON.stringify(error, Object.getOwnPropertyNames(error as object), 2))
+        toast.error(`上传失败: ${error instanceof Error ? error.message : '请检查 FAL_KEY 并重启服务'}`)
         useAppStore.getState().updateCanvasItem(id, { uploading: false })
       }
     },
