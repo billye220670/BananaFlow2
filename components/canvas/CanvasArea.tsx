@@ -1397,6 +1397,7 @@ export function CanvasArea() {
         <div className="flex-1 min-h-0" style={{ position: 'relative' }}>
           <div style={{ position: 'absolute', inset: 0 }}>
             <Tldraw
+              licenseKey={process.env.NEXT_PUBLIC_TLDRAW_LICENSE_KEY}
               onMount={handleMount}
               autoFocus
               components={tldrawComponents}
