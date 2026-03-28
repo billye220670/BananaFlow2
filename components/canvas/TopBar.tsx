@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useEditor, track } from 'tldraw'
-import { Zap, MessageCircle, User } from 'lucide-react'
+import { Zap, MessageCircle, User, Key } from 'lucide-react'
 import { CustomTooltip } from '@/components/ui/tooltip'
 import { useAppStore } from '@/lib/store'
 
@@ -102,7 +102,13 @@ function EditableProjectName() {
 const LogoMenuButton = () => {
   const editor = useEditor()
   const [isOpen, setIsOpen] = useState(false)
+  const [isConfigKeyOpen, setIsConfigKeyOpen] = useState(false)
+  const [apiKeyInput, setApiKeyInput] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  
+  const falApiKey = useAppStore(s => s.falApiKey)
+  const setFalApiKey = useAppStore(s => s.setFalApiKey)
   
   // 点击外部关闭菜单
   useEffect(() => {
@@ -128,11 +134,47 @@ const LogoMenuButton = () => {
     { type: 'separator' as const },
     { label: 'Zoom to Fit', shortcut: '⇧1', action: () => editor.zoomToFit({ animation: { duration: 200 } }) },
     { label: 'Reset Zoom', shortcut: '⇧0', action: () => editor.resetZoom() },
+    { type: 'separator' as const },
+    { label: 'Configure API Key', icon: Key, action: () => {
+      setApiKeyInput(falApiKey)
+      setIsConfigKeyOpen(true)
+      setIsOpen(false)
+    }},
   ]
     
   const handleMenuItemClick = (action: () => void) => {
     action()
     setIsOpen(false)
+  }
+  
+  // Modal 打开时聚焦 input
+  useEffect(() => {
+    if (isConfigKeyOpen && inputRef.current) {
+      inputRef.current.focus()
+    }
+  }, [isConfigKeyOpen])
+  
+  // 按 Escape 关闭 Modal
+  useEffect(() => {
+    if (!isConfigKeyOpen) return
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsConfigKeyOpen(false)
+      }
+    }
+    
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [isConfigKeyOpen])
+  
+  const handleSaveApiKey = () => {
+    setFalApiKey(apiKeyInput.trim())
+    setIsConfigKeyOpen(false)
+  }
+  
+  const handleCancelApiKey = () => {
+    setIsConfigKeyOpen(false)
   }
   
   return (
@@ -165,6 +207,61 @@ const LogoMenuButton = () => {
               </button>
             )
           )}
+        </div>
+      )}
+        
+      {/* Configure API Key Modal */}
+      {isConfigKeyOpen && (
+        <div 
+          className="fixed inset-0 flex items-center justify-center z-[9999]"
+          onClick={() => setIsConfigKeyOpen(false)}
+        >
+          {/* 遮罩层 */}
+          <div className="absolute inset-0 bg-black/50" />
+            
+          {/* 对话框面板 */}
+          <div 
+            className="relative bg-zinc-900 border border-zinc-700/50 rounded-lg shadow-2xl w-[400px] p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 标题 */}
+            <h2 className="text-lg font-semibold text-zinc-100 mb-4">Configure API Key</h2>
+              
+            {/* 输入框 */}
+            <div className="mb-6">
+              <label className="block text-sm text-zinc-400 mb-2">FAL API Key</label>
+              <input
+                ref={inputRef}
+                type="password"
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleSaveApiKey()
+                  }
+                }}
+                placeholder="Enter your FAL API Key"
+                className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:border-zinc-500 transition-colors"
+              />
+            </div>
+              
+            {/* 按钮组 */}
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={handleCancelApiKey}
+                className="px-4 py-2 text-sm font-medium text-zinc-300 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveApiKey}
+                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition-colors"
+              >
+                Save
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

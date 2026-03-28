@@ -38,6 +38,8 @@ interface Actions {
   setSelectedShapeIds: (ids: string[]) => void
   // project name
   setProjectName: (name: string) => void
+  // FAL API Key
+  setFalApiKey: (key: string) => void
   // chat panel
   toggleChat: () => void
   openChat: () => void
@@ -64,6 +66,7 @@ export function shapeIdToCanvasItemId(shapeId: TLShapeId): string {
 interface PersistedSlice {
   chatHistory: Message[]
   projectName: string
+  falApiKey: string
 }
 
 interface SessionSlice {
@@ -88,6 +91,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       // persisted
       chatHistory: [],
       projectName: 'Untitled',
+      falApiKey: '',
 
       // session-only
       canvasItems: [],
@@ -257,6 +261,9 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       // project name
       setProjectName: (name) => set({ projectName: name }),
       
+      // FAL API Key
+      setFalApiKey: (key) => set({ falApiKey: key }),
+      
       // chat panel
       toggleChat: () => set((s) => ({ isChatOpen: !s.isChatOpen })),
       openChat: () => set({ isChatOpen: true }),
@@ -371,7 +378,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
         },
         removeItem: (name: string) => safeStorage.removeItem(name),
       },
-      partialize: (state) => ({ chatHistory: state.chatHistory, projectName: state.projectName }),
+      partialize: (state) => ({ chatHistory: state.chatHistory, projectName: state.projectName, falApiKey: state.falApiKey }),
     }
   )
 )

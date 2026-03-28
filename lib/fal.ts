@@ -1,6 +1,23 @@
 import { fal } from "@fal-ai/client"
+import { useAppStore } from "@/lib/store"
 
-fal.config({ proxyUrl: "/api/fal/proxy" })
+fal.config({ 
+  proxyUrl: "/api/fal/proxy",
+  requestMiddleware: async (request) => {
+    // 从 store 中获取用户自定义的 API Key
+    const falApiKey = useAppStore.getState().falApiKey
+    if (falApiKey && falApiKey.trim()) {
+      return {
+        ...request,
+        headers: {
+          ...request.headers,
+          'x-fal-key': falApiKey.trim(),
+        },
+      }
+    }
+    return request
+  },
+})
 
 interface FalResult {
   data: { images: Array<{ url: string; width: number; height: number }> }

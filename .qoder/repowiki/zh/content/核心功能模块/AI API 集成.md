@@ -18,6 +18,13 @@
 - [docs/superpowers/specs/2026-03-25-lovart-design.md](file://docs/superpowers/specs/2026-03-25-lovart-design.md)
 </cite>
 
+## 更新摘要
+**所做更改**
+- 更新 FAL 客户端封装以支持自动图像尺寸检测和基于提示的文件名生成
+- 增强 blob URL 到 data URL 转换功能，确保 Tldraw 兼容性
+- 新增分辨率和宽高比参数支持，提升图像生成灵活性
+- 改进错误处理机制，提供更详细的调试日志
+
 ## 目录
 1. [简介](#简介)
 2. [项目结构](#项目结构)
@@ -32,6 +39,8 @@
 
 ## 简介
 本项目为一个基于 Next.js 的 AI 创意设计平台，集成了 FAL.ai 的图像生成与编辑能力。通过客户端封装与服务器代理路由，实现了安全的密钥管理与稳定的 API 调用。用户可在画布中进行图像创作与编辑，并通过聊天面板输入提示词驱动 AI 生成；系统同时提供文件上传、状态管理、错误处理与可视化反馈等完整功能链路。
+
+**更新** 本次更新增强了后端集成能力，包括自动图像尺寸检测、基于提示的文件名生成以及改进的 blob URL 到 data URL 转换，确保与 Tldraw 的完全兼容性。
 
 ## 项目结构
 项目采用按功能分层的组织方式：
@@ -72,7 +81,7 @@ L_FAL --> S_Route
 - [components/chat/ChatPanel.tsx:1-22](file://components/chat/ChatPanel.tsx#L1-L22)
 - [components/chat/TextInput.tsx:1-140](file://components/chat/TextInput.tsx#L1-L140)
 - [components/chat/ReferenceUploader.tsx:1-100](file://components/chat/ReferenceUploader.tsx#L1-L100)
-- [lib/fal.ts:1-62](file://lib/fal.ts#L1-L62)
+- [lib/fal.ts:1-90](file://lib/fal.ts#L1-L90)
 - [lib/store.ts:1-119](file://lib/store.ts#L1-L119)
 - [lib/types.ts:1-37](file://lib/types.ts#L1-L37)
 - [lib/validate.ts:1-14](file://lib/validate.ts#L1-L14)
@@ -83,21 +92,23 @@ L_FAL --> S_Route
 - [package.json:1-48](file://package.json#L1-L48)
 
 ## 核心组件
-- FAL 客户端封装：统一配置代理地址、封装生成与编辑函数、提供文件上传能力
+- FAL 客户端封装：统一配置代理地址、封装生成与编辑函数、提供文件上传能力，支持自动图像尺寸检测和基于提示的文件名生成
 - 代理路由：服务端转发 FAL 请求，隐藏密钥，限制跨域风险
 - 状态管理：Zustand 存储画布项、聊天历史、参考图与编辑目标
 - 文件校验：限制格式与大小，保障上传质量与性能
 - UI 组件：画布渲染与交互、聊天输入与历史、参考图上传与预览
 
+**更新** 新增分辨率和宽高比参数支持，增强错误处理和调试日志功能。
+
 **章节来源**
-- [lib/fal.ts:1-62](file://lib/fal.ts#L1-L62)
+- [lib/fal.ts:1-90](file://lib/fal.ts#L1-L90)
 - [app/api/fal/proxy/route.ts:1-4](file://app/api/fal/proxy/route.ts#L1-L4)
 - [lib/store.ts:1-119](file://lib/store.ts#L1-L119)
 - [lib/validate.ts:1-14](file://lib/validate.ts#L1-L14)
 - [lib/types.ts:1-37](file://lib/types.ts#L1-L37)
 
 ## 架构总览
-系统采用“前端直连代理、代理服务端转发”的模式，确保密钥不暴露于客户端。前端通过封装好的函数调用 FAL API，代理路由负责鉴权与请求转发。
+系统采用"前端直连代理、代理服务端转发"的模式，确保密钥不暴露于客户端。前端通过封装好的函数调用 FAL API，代理路由负责鉴权与请求转发。
 
 ```mermaid
 sequenceDiagram
@@ -125,15 +136,17 @@ C-->>U : "展示生成结果"
 
 ### FAL 客户端封装（lib/fal.ts）
 - 配置代理地址：初始化时设置代理 URL，使客户端以代理模式访问 FAL
-- 图像生成：构造基础输入参数，合并提示词与可选参考图 URL，调用订阅接口获取首张图片 URL
+- 图像生成：构造基础输入参数，合并提示词与可选参考图 URL，支持自动图像尺寸检测和分辨率设置，调用订阅接口获取首张图片 URL
 - 图像编辑：将目标图 URL 放在首位，合并参考图，调用订阅接口获取编辑结果
 - 文件上传：通过存储模块上传本地文件，返回可公开访问的 URL
 
+**更新** 新增分辨率和宽高比参数支持，增强错误处理和调试日志功能。
+
 ```mermaid
 flowchart TD
-Start(["进入 generateImage"]) --> Merge["合并基础参数与提示词<br/>可选附加 image_urls"]
+Start(["进入 generateImage"]) --> Merge["合并基础参数与提示词<br/>可选附加 image_urls<br/>支持分辨率和宽高比设置"]
 Merge --> Call["调用 fal.subscribe 模型"]
-Call --> Parse["解析响应数据<br/>提取首张图片 URL"]
+Call --> Parse["解析响应数据<br/>提取首张图片 URL<br/>包含尺寸信息"]
 Parse --> End(["返回 URL"])
 Start2(["进入 editImage"]) --> Prepend["将目标图 URL 置前<br/>合并参考图 URL"]
 Prepend --> Call2["调用订阅接口"]
@@ -142,10 +155,10 @@ Parse2 --> End2(["返回 URL"])
 ```
 
 **图表来源**
-- [lib/fal.ts:21-57](file://lib/fal.ts#L21-L57)
+- [lib/fal.ts:17-85](file://lib/fal.ts#L17-L85)
 
 **章节来源**
-- [lib/fal.ts:1-62](file://lib/fal.ts#L1-L62)
+- [lib/fal.ts:1-90](file://lib/fal.ts#L1-L90)
 - [__tests__/fal.test.ts:26-60](file://__tests__/fal.test.ts#L26-L60)
 
 ### 代理路由（app/api/fal/proxy/route.ts）
@@ -243,6 +256,8 @@ Done -- 是 --> Save["保存 FAL URL 并结束上传态"]
 - 上传完成后替换占位图与本地 URL 为 FAL CDN URL
 - 提供下载与清空功能，结合状态管理维护多图层布局
 
+**更新** 增强 blob URL 到 data URL 转换功能，确保 Tldraw 兼容性，支持自动图像尺寸检测。
+
 ```mermaid
 sequenceDiagram
 participant D as "用户拖拽"
@@ -259,7 +274,7 @@ CA->>ST : "更新项为最终 URL"
 
 **图表来源**
 - [components/canvas/CanvasArea.tsx:306-340](file://components/canvas/CanvasArea.tsx#L306-L340)
-- [lib/fal.ts:59-61](file://lib/fal.ts#L59-L61)
+- [lib/fal.ts:87-90](file://lib/fal.ts#L87-L90)
 - [lib/store.ts:58-92](file://lib/store.ts#L58-L92)
 
 **章节来源**
@@ -270,6 +285,8 @@ CA->>ST : "更新项为最终 URL"
 - 发送按钮受状态阻塞：当存在上传或加载时禁用并提示
 - 成功后将结果写入画布与聊天历史，失败时清理占位并提示
 
+**更新** 新增分辨率和宽高比选择器，支持自动图像尺寸检测和基于提示的文件名生成。
+
 ```mermaid
 flowchart TD
 Enter["输入提示词并点击发送"] --> Block["检测阻塞条件上传/加载"]
@@ -277,7 +294,7 @@ Block --> |阻塞| Hint["显示提示并禁用按钮"]
 Block --> |允许| PlaceHolder["添加占位图项"]
 PlaceHolder --> Mode{"编辑模式？"}
 Mode --> |是| Edit["调用 editImage"]
-Mode --> |否| Gen["调用 generateImage"]
+Mode --> |否| Gen["调用 generateImage<br/>支持分辨率和宽高比设置"]
 Edit --> Result["更新画布与聊天历史"]
 Gen --> Result
 Result --> End["完成"]
@@ -321,8 +338,7 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
 - 渲染优化：画布仅在必要时重绘，占位图使用渐变动画降低感知延迟
 - 状态优化：聊天历史截断，避免无限增长导致内存压力
 - 网络优化：代理集中转发，减少跨域与证书问题带来的额外开销
-
-[本节为通用性能建议，无需特定文件引用]
+- **更新** 增加自动图像尺寸检测功能，根据分辨率和宽高比动态计算生成尺寸，优化内存使用
 
 ## 故障排除指南
 - 上传失败
@@ -337,6 +353,10 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
   - 现象：编辑按钮被禁用或无响应
   - 排查：确认目标图已上传完成且 URL 可用，参考图数量与格式符合要求
   - 参考位置：[components/chat/TextInput.tsx:68-72](file://components/chat/TextInput.tsx#L68-L72)，[lib/store.ts:24-29](file://lib/store.ts#L24-L29)
+- **更新** Tldraw 兼容性问题
+  - 现象：Tldraw 无法显示生成的图片
+  - 排查：检查 blob URL 到 data URL 转换功能，确认图片预加载成功
+  - 参考位置：[components/canvas/CanvasArea.tsx:60-84](file://components/canvas/CanvasArea.tsx#L60-L84)
 
 **章节来源**
 - [components/chat/ReferenceUploader.tsx:32-38](file://components/chat/ReferenceUploader.tsx#L32-L38)
@@ -345,9 +365,9 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
 - [lib/store.ts:24-29](file://lib/store.ts#L24-L29)
 
 ## 结论
-本项目通过“客户端封装 + 代理路由”的架构，既保证了密钥安全，又提供了流畅的图像生成与编辑体验。配合完善的文件校验、状态管理与 UI 交互，形成了从输入到输出的闭环。后续可按计划文档扩展用户认证与数据库持久化，进一步完善历史记录与协作能力。
+本项目通过"客户端封装 + 代理路由"的架构，既保证了密钥安全，又提供了流畅的图像生成与编辑体验。配合完善的文件校验、状态管理与 UI 交互，形成了从输入到输出的闭环。后续可按计划文档扩展用户认证与数据库持久化，进一步完善历史记录与协作能力。
 
-[本节为总结性内容，无需特定文件引用]
+**更新** 本次更新显著增强了后端集成能力，包括自动图像尺寸检测、基于提示的文件名生成以及改进的 blob URL 到 data URL 转换，确保与 Tldraw 的完全兼容性，提升了整体用户体验和系统稳定性。
 
 ## 附录
 
@@ -356,12 +376,16 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
 - 在发送前检查阻塞条件，防止并发与空值导致的异常
 - 使用占位图与渐进式反馈提升用户体验
 - 对网络错误进行明确提示并引导重试
-
-[本节为通用建议，无需特定文件引用]
+- **更新** 合理设置分辨率和宽高比参数，平衡生成质量和性能
 
 ### 扩展方法与第三方集成
 - 新增模型：在封装函数中新增对应订阅调用，保持一致的输入/输出约定
 - 更换代理：调整代理路由的凭据来源与转发策略
 - 多服务并行：在同一封装内区分不同服务的代理路径，按需切换
+- **更新** 支持自定义图像尺寸检测算法，根据具体需求调整生成策略
 
-[本节为概念性说明，无需特定文件引用]
+### 错误处理与调试
+- 启用详细日志记录，便于追踪 API 调用过程
+- 实现重试机制，处理临时性网络错误
+- 提供友好的错误提示，指导用户进行问题排查
+- **更新** 增加 blob URL 转换失败的降级处理，确保系统稳定性
