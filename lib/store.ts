@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { CanvasItem, StoredRef, Message, Marker } from "@/lib/types"
+import type { CanvasItem, StoredRef, Message, Marker, User } from "@/lib/types"
 import { nanoid } from "nanoid"
 import type { Editor, TLShapeId } from "tldraw"
 
@@ -46,6 +46,9 @@ interface Actions {
   closeChat: () => void
   clearChatHistory: () => void
   setChatPanelWidth: (width: number) => void
+  // user actions
+  setUser: (user: User | null) => void
+  clearUser: () => void
   // marker actions
   setActiveTool: (toolId: string) => void
   addMarker: (itemId: string, relativeX: number, relativeY: number) => boolean
@@ -83,6 +86,8 @@ interface SessionSlice {
   // marker tool
   markers: Marker[]
   activeTool: string
+  // user
+  user: User | null
 }
 
 export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
@@ -107,6 +112,8 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       // marker tool
       markers: [],
       activeTool: 'select',
+      // user
+      user: null,
 
       // canvas actions
       addCanvasItem: (item) =>
@@ -364,6 +371,10 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
           }
           return { markers: [] }
         }),
+      
+      // user actions
+      setUser: (user) => set({ user }),
+      clearUser: () => set({ user: null }),
     }),
     {
       name: "lovart-storage",

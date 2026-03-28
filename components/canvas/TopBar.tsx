@@ -1,10 +1,20 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { useEditor, track } from 'tldraw'
 import { Zap, MessageCircle, User, Key } from 'lucide-react'
 import { CustomTooltip } from '@/components/ui/tooltip'
 import { useAppStore } from '@/lib/store'
+
+// 手机号脱敏函数
+function maskPhone(phone: string | undefined | null): string {
+  if (!phone) return '用户'
+  if (phone.length === 11) {
+    return phone.slice(0, 3) + '****' + phone.slice(7)
+  }
+  return phone
+}
 
 // ── Logo 图片组件 ────────────────────────────────────────────────────────────
 function LogoIcon({ className }: { className?: string }) {
@@ -25,13 +35,6 @@ function EditableProjectName() {
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState(projectName)
   const inputRef = useRef<HTMLInputElement>(null)
-  
-  // 当 projectName 改变时同步 editValue
-  useEffect(() => {
-    if (!isEditing) {
-      setEditValue(projectName)
-    }
-  }, [projectName, isEditing])
   
   const startEdit = useCallback(() => {
     setEditValue(projectName)
@@ -272,6 +275,28 @@ const LogoMenuButton = () => {
 export const TopBar = track(() => {
   const isChatOpen = useAppStore(s => s.isChatOpen)
   const toggleChat = useAppStore(s => s.toggleChat)
+  const user = useAppStore(s => s.user)
+  const clearUser = useAppStore(s => s.clearUser)
+  const router = useRouter()
+  
+  // 组件挂载时获取用户信息
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.data) {
+          useAppStore.getState().setUser(data.data)
+        }
+      })
+      .catch(() => {})
+  }, [])
+  
+  // 退出登录
+  const handleLogout = async () => {
+    await fetch('/api/auth/signout', { method: 'POST' })
+    clearUser()
+    router.push('/login')
+  }
   
   return (
     <div className="absolute top-1 left-0 right-0 h-12 z-[300] pointer-events-none">
@@ -298,6 +323,19 @@ export const TopBar = track(() => {
               <User className="w-4 h-4 text-white" />
             </button>
           </CustomTooltip>
+          
+          {/* 用户信息和退出按钮 */}
+          {user && (
+            <div className="flex items-center gap-2 pl-2 border-l border-gray-200">
+              <span className="text-sm text-zinc-500">{maskPhone(user.phone)}</span>
+              <button
+                onClick={handleLogout}
+                className="text-sm text-zinc-400 hover:text-zinc-600 transition"
+              >
+                退出
+              </button>
+            </div>
+          )}
           
           {/* Chat 按钮 - 聊天面板打开时隐藏 */}
           {!isChatOpen && (

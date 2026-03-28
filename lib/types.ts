@@ -46,3 +46,10 @@ export interface AppState {
   editingTarget: StoredRef | null
   isLoading: boolean
 }
+
+export interface User {
+  id: string
+  phone: string
+  nickname: string | null
+  created_at: string
+}
