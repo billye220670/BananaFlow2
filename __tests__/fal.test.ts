@@ -25,12 +25,12 @@ beforeEach(() => {
 
 describe("generateImage", () => {
   it("calls fal.subscribe with correct model and prompt", async () => {
-    const url = await generateImage({ prompt: "a red cat", referenceUrls: [] })
+    const result = await generateImage({ prompt: "a red cat", referenceUrls: [] })
     expect(fal.subscribe).toHaveBeenCalledWith(
-      "fal-ai/nano-banana",
+      "fal-ai/nano-banana-2/edit",
       expect.objectContaining({ input: expect.objectContaining({ prompt: "a red cat" }) })
     )
-    expect(url).toBe("https://fal.media/result.png")
+    expect(result).toEqual({ url: "https://fal.media/result.png", width: 1024, height: 1024 })
   })
 
   it("omits image_urls when referenceUrls is empty", async () => {

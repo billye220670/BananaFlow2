@@ -201,20 +201,26 @@ export function InlineEditPanel() {
       const targetUrl = selectedItem.falUrl ?? selectedItem.url
 
       let resultUrl: string
+      let naturalWidth: number | undefined
+      let naturalHeight: number | undefined
+      
       if (targetUrl) {
+        // editImage 返回纯 URL
         resultUrl = await editImage({ prompt, targetUrl, referenceUrls: refUrls })
       } else {
-        resultUrl = await generateImage({ prompt, referenceUrls: refUrls })
+        // generateImage 返回 { url, width, height }
+        const result = await generateImage({ prompt, referenceUrls: refUrls })
+        resultUrl = result.url
+        naturalWidth = result.width
+        naturalHeight = result.height
       }
 
-      // Load image to get natural dimensions before updating CanvasItem
-      const img = new Image()
-      img.onload = () => {
+      // 如果已有 FAL 返回的尺寸，直接使用
+      if (naturalWidth && naturalHeight) {
         const maxW = 480
-        const scale = Math.min(maxW / img.naturalWidth, maxW / img.naturalHeight, 1)
-        const width = Math.round(img.naturalWidth * scale)
-        const height = Math.round(img.naturalHeight * scale)
-        // Use prompt prefix (first 20 chars) as fileName, fallback to "AI Generated"
+        const scale = Math.min(maxW / naturalWidth, maxW / naturalHeight, 1)
+        const width = Math.round(naturalWidth * scale)
+        const height = Math.round(naturalHeight * scale)
         const fileName = prompt.length > 0 
           ? `AI-${prompt.slice(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.png`
           : "AI Generated.png"
@@ -224,21 +230,44 @@ export function InlineEditPanel() {
           placeholder: false,
           width,
           height,
-          naturalWidth: img.naturalWidth,
-          naturalHeight: img.naturalHeight,
+          naturalWidth,
+          naturalHeight,
           fileName,
         })
+      } else {
+        // Load image to get natural dimensions before updating CanvasItem
+        const img = new Image()
+        img.onload = () => {
+          const maxW = 480
+          const scale = Math.min(maxW / img.naturalWidth, maxW / img.naturalHeight, 1)
+          const width = Math.round(img.naturalWidth * scale)
+          const height = Math.round(img.naturalHeight * scale)
+          // Use prompt prefix (first 20 chars) as fileName, fallback to "AI Generated"
+          const fileName = prompt.length > 0 
+            ? `AI-${prompt.slice(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.png`
+            : "AI Generated.png"
+          updateCanvasItem(phId, { 
+            url: resultUrl, 
+            falUrl: resultUrl, 
+            placeholder: false,
+            width,
+            height,
+            naturalWidth: img.naturalWidth,
+            naturalHeight: img.naturalHeight,
+            fileName,
+          })
+        }
+        img.onerror = () => {
+          // Fallback: update without dimensions if image fails to load
+          updateCanvasItem(phId, { 
+            url: resultUrl, 
+            falUrl: resultUrl, 
+            placeholder: false,
+            fileName: "AI Generated.png",
+          })
+        }
+        img.src = resultUrl
       }
-      img.onerror = () => {
-        // Fallback: update without dimensions if image fails to load
-        updateCanvasItem(phId, { 
-          url: resultUrl, 
-          falUrl: resultUrl, 
-          placeholder: false,
-          fileName: "AI Generated.png",
-        })
-      }
-      img.src = resultUrl
 
       appendMessage({
         id: nanoid(),

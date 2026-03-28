@@ -41,7 +41,7 @@ export async function generateImage({
   referenceUrls: string[]
   aspectRatio?: string
   resolution?: string
-}): Promise<string> {
+}): Promise<{ url: string; width: number; height: number }> {
   const input: Record<string, unknown> = {
     ...BASE_INPUT,
     prompt,
@@ -64,7 +64,9 @@ export async function generateImage({
       }
     },
   })) as FalResult
-  return result.data.images[0].url
+  
+  const image = result.data.images[0]
+  return { url: image.url, width: image.width, height: image.height }
 }
 
 export async function editImage({

@@ -194,8 +194,8 @@ export function ChatPanel() {
     
     console.log('[handleSend] Collected referenceUrls:', referenceUrls.map(u => u.substring(0, 80)))
     
-    // 处理 'auto' 情况：默认使用 1:1 比例
-    const aspectRatio = selectedSize === 'auto' ? '1:1' : selectedSize
+    // 直接使用选中的比例，包括 'auto'
+    const aspectRatio = selectedSize
     const resolution = selectedResolution  // 如 '1K'
 
     // 调试日志：发送参数
@@ -215,7 +215,12 @@ export function ChatPanel() {
     // 2. 计算占位图画布显示尺寸
     const basePixels: Record<string, number> = { '1K': 1024, '2K': 2048, '4K': 4096 }
     const base = basePixels[resolution] || 1024
-    const [wRatio, hRatio] = aspectRatio.split(':').map(Number)
+    
+    // 处理 auto 情况：占位阶段不知道实际比例，用正方形作为占位
+    let wRatio = 1, hRatio = 1
+    if (aspectRatio !== 'auto' && aspectRatio.includes(':')) {
+      [wRatio, hRatio] = aspectRatio.split(':').map(Number)
+    }
     const ratio = wRatio / hRatio
 
     let genW: number, genH: number
@@ -284,18 +289,29 @@ export function ChatPanel() {
 
     // 8. 调用 FAL API（使用 finalPrompt，包含 marker 描述前缀）
     try {
-      const resultUrl = await generateImage({
+      const result = await generateImage({
         prompt: finalPrompt,
         referenceUrls,
         aspectRatio,
         resolution,
       })
+      const resultUrl = result.url
 
-      // 成功：更新画布项和消息
+      // 计算显示尺寸：使用 FAL 返回的实际宽高
+      const maxDisplaySize = 480
+      const scaleResult = Math.min(maxDisplaySize / result.width, maxDisplaySize / result.height, 1)
+      const newDisplayW = Math.round(result.width * scaleResult)
+      const newDisplayH = Math.round(result.height * scaleResult)
+
+      // 成功：更新画布项和消息，使用实际宽高
       updateCanvasItem(itemId, {
         url: resultUrl,
         falUrl: resultUrl,
         placeholder: false,
+        width: newDisplayW,
+        height: newDisplayH,
+        naturalWidth: result.width,
+        naturalHeight: result.height,
       })
 
       updateMessage(msgId, {

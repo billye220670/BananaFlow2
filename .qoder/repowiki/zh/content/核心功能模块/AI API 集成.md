@@ -4,8 +4,9 @@
 **本文引用的文件**
 - [lib/fal.ts](file://lib/fal.ts)
 - [app/api/fal/proxy/route.ts](file://app/api/fal/proxy/route.ts)
-- [lib/types.ts](file://lib/types.ts)
 - [lib/store.ts](file://lib/store.ts)
+- [components/canvas/TopBar.tsx](file://components/canvas/TopBar.tsx)
+- [lib/types.ts](file://lib/types.ts)
 - [lib/validate.ts](file://lib/validate.ts)
 - [components/canvas/CanvasArea.tsx](file://components/canvas/CanvasArea.tsx)
 - [components/chat/ReferenceUploader.tsx](file://components/chat/ReferenceUploader.tsx)
@@ -14,13 +15,18 @@
 - [app/page.tsx](file://app/page.tsx)
 - [package.json](file://package.json)
 - [__tests__/fal.test.ts](file://__tests__/fal.test.ts)
+- [__tests__/store.test.ts](file://__tests__/store.test.ts)
 - [docs/superpowers/plans/2026-03-25-lovart-implementation.md](file://docs/superpowers/plans/2026-03-25-lovart-implementation.md)
 - [docs/superpowers/specs/2026-03-25-lovart-design.md](file://docs/superpowers/specs/2026-03-25-lovart-design.md)
 </cite>
 
 ## 更新摘要
 **所做更改**
-- 更新 FAL 客户端封装以支持自动图像尺寸检测和基于提示的文件名生成
+- 新增 FAL API 密钥配置功能，支持用户自定义 API 密钥
+- 在 lib/fal.ts 中实现请求中间件动态注入 API 密钥
+- 在 app/api/fal/proxy/route.ts 中添加自定义 API 密钥解析逻辑
+- 在 lib/store.ts 中新增 falApiKey 字段和持久化存储
+- 在 components/canvas/TopBar.tsx 中实现 API 密钥配置模态框
 - 增强 blob URL 到 data URL 转换功能，确保 Tldraw 兼容性
 - 新增分辨率和宽高比参数支持，提升图像生成灵活性
 - 改进错误处理机制，提供更详细的调试日志
@@ -31,22 +37,23 @@
 3. [核心组件](#核心组件)
 4. [架构总览](#架构总览)
 5. [详细组件分析](#详细组件分析)
-6. [依赖关系分析](#依赖关系分析)
-7. [性能考量](#性能考量)
-8. [故障排除指南](#故障排除指南)
-9. [结论](#结论)
-10. [附录](#附录)
+6. [API 密钥配置功能](#api-密钥配置功能)
+7. [依赖关系分析](#依赖关系分析)
+8. [性能考量](#性能考量)
+9. [故障排除指南](#故障排除指南)
+10. [结论](#结论)
+11. [附录](#附录)
 
 ## 简介
 本项目为一个基于 Next.js 的 AI 创意设计平台，集成了 FAL.ai 的图像生成与编辑能力。通过客户端封装与服务器代理路由，实现了安全的密钥管理与稳定的 API 调用。用户可在画布中进行图像创作与编辑，并通过聊天面板输入提示词驱动 AI 生成；系统同时提供文件上传、状态管理、错误处理与可视化反馈等完整功能链路。
 
-**更新** 本次更新增强了后端集成能力，包括自动图像尺寸检测、基于提示的文件名生成以及改进的 blob URL 到 data URL 转换，确保与 Tldraw 的完全兼容性。
+**更新** 本次更新新增了 FAL API 密钥配置功能，允许用户自定义 API 密钥，增强了系统的灵活性和安全性。同时增强了后端集成能力，包括自动图像尺寸检测、基于提示的文件名生成以及改进的 blob URL 到 data URL 转换，确保与 Tldraw 的完全兼容性。
 
 ## 项目结构
 项目采用按功能分层的组织方式：
 - lib：核心业务逻辑与工具（FAL 封装、状态存储、类型定义、校验）
 - app/api/fal/proxy：FAL 代理路由（服务端转发，保护密钥）
-- components：UI 组件（画布、聊天、输入、消息历史、参考图上传）
+- components：UI 组件（画布、聊天、输入、消息历史、参考图上传、顶部栏）
 - __tests__：单元测试（覆盖 FAL 封装与行为）
 - docs/superpowers：设计与实现计划文档（指导性说明）
 
@@ -57,6 +64,7 @@ UI_Canvas["CanvasArea.tsx"]
 UI_Chat["ChatPanel.tsx"]
 UI_Text["TextInput.tsx"]
 UI_Uploader["ReferenceUploader.tsx"]
+UI_TopBar["TopBar.tsx"]
 end
 subgraph "库与工具"
 L_FAL["lib/fal.ts"]
@@ -72,6 +80,7 @@ UI_Text --> L_FAL
 UI_Uploader --> L_FAL
 UI_Text --> L_Store
 UI_Chat --> L_Store
+UI_TopBar --> L_Store
 L_FAL --> S_Route
 ```
 
@@ -81,71 +90,77 @@ L_FAL --> S_Route
 - [components/chat/ChatPanel.tsx:1-22](file://components/chat/ChatPanel.tsx#L1-L22)
 - [components/chat/TextInput.tsx:1-140](file://components/chat/TextInput.tsx#L1-L140)
 - [components/chat/ReferenceUploader.tsx:1-100](file://components/chat/ReferenceUploader.tsx#L1-L100)
-- [lib/fal.ts:1-90](file://lib/fal.ts#L1-L90)
-- [lib/store.ts:1-119](file://lib/store.ts#L1-L119)
-- [lib/types.ts:1-37](file://lib/types.ts#L1-L37)
+- [components/canvas/TopBar.tsx:1-319](file://components/canvas/TopBar.tsx#L1-L319)
+- [lib/fal.ts:1-107](file://lib/fal.ts#L1-L107)
+- [lib/store.ts:1-385](file://lib/store.ts#L1-L385)
+- [lib/types.ts:1-49](file://lib/types.ts#L1-L49)
 - [lib/validate.ts:1-14](file://lib/validate.ts#L1-L14)
-- [app/api/fal/proxy/route.ts:1-4](file://app/api/fal/proxy/route.ts#L1-L4)
+- [app/api/fal/proxy/route.ts:1-19](file://app/api/fal/proxy/route.ts#L1-L19)
 
 **章节来源**
 - [app/page.tsx:1-59](file://app/page.tsx#L1-L59)
-- [package.json:1-48](file://package.json#L1-L48)
+- [package.json:1-47](file://package.json#L1-L47)
 
 ## 核心组件
 - FAL 客户端封装：统一配置代理地址、封装生成与编辑函数、提供文件上传能力，支持自动图像尺寸检测和基于提示的文件名生成
 - 代理路由：服务端转发 FAL 请求，隐藏密钥，限制跨域风险
-- 状态管理：Zustand 存储画布项、聊天历史、参考图与编辑目标
+- 状态管理：Zustand 存储画布项、聊天历史、参考图与编辑目标，支持 API 密钥持久化
 - 文件校验：限制格式与大小，保障上传质量与性能
-- UI 组件：画布渲染与交互、聊天输入与历史、参考图上传与预览
+- UI 组件：画布渲染与交互、聊天输入与历史、参考图上传与预览、API 密钥配置模态框
+- API 密钥配置：用户自定义 API 密钥，支持安全存储与动态注入
 
-**更新** 新增分辨率和宽高比参数支持，增强错误处理和调试日志功能。
+**更新** 新增分辨率和宽高比参数支持，增强错误处理和调试日志功能。新增 API 密钥配置功能，支持用户自定义密钥并安全存储。
 
 **章节来源**
-- [lib/fal.ts:1-90](file://lib/fal.ts#L1-L90)
-- [app/api/fal/proxy/route.ts:1-4](file://app/api/fal/proxy/route.ts#L1-L4)
-- [lib/store.ts:1-119](file://lib/store.ts#L1-L119)
+- [lib/fal.ts:1-107](file://lib/fal.ts#L1-L107)
+- [app/api/fal/proxy/route.ts:1-19](file://app/api/fal/proxy/route.ts#L1-L19)
+- [lib/store.ts:1-385](file://lib/store.ts#L1-L385)
 - [lib/validate.ts:1-14](file://lib/validate.ts#L1-L14)
-- [lib/types.ts:1-37](file://lib/types.ts#L1-L37)
+- [lib/types.ts:1-49](file://lib/types.ts#L1-L49)
 
 ## 架构总览
-系统采用"前端直连代理、代理服务端转发"的模式，确保密钥不暴露于客户端。前端通过封装好的函数调用 FAL API，代理路由负责鉴权与请求转发。
+系统采用"前端直连代理、代理服务端转发"的模式，确保密钥不暴露于客户端。前端通过封装好的函数调用 FAL API，代理路由负责鉴权与请求转发。新增的 API 密钥配置功能允许用户自定义密钥，通过请求中间件动态注入到每个请求中。
 
 ```mermaid
 sequenceDiagram
 participant U as "用户"
-participant C as "TextInput.tsx"
+participant T as "TopBar.tsx"
+participant S as "Zustand Store"
 participant F as "lib/fal.ts"
 participant P as "app/api/fal/proxy/route.ts"
-participant S as "FAL 服务"
-U->>C : "输入提示词并点击发送"
-C->>F : "generateImage 或 editImage"
-F->>P : "订阅模型请求携带代理地址"
-P->>S : "转发带凭据的请求"
-S-->>P : "返回生成结果"
+participant K as "FAL 服务"
+U->>T : "打开 API 密钥配置"
+T->>S : "setFalApiKey(key)"
+S-->>F : "状态更新触发"
+F->>P : "请求中间件注入 x-fal-key"
+P->>K : "转发带自定义密钥的请求"
+K-->>P : "返回生成结果"
 P-->>F : "透传响应"
-F-->>C : "返回图片 URL"
-C-->>U : "展示生成结果"
+F-->>U : "展示生成结果"
 ```
 
 **图表来源**
-- [components/chat/TextInput.tsx:34-89](file://components/chat/TextInput.tsx#L34-L89)
-- [lib/fal.ts:21-57](file://lib/fal.ts#L21-L57)
-- [app/api/fal/proxy/route.ts:1-4](file://app/api/fal/proxy/route.ts#L1-L4)
+- [components/canvas/TopBar.tsx:138-174](file://components/canvas/TopBar.tsx#L138-L174)
+- [lib/store.ts:264-265](file://lib/store.ts#L264-L265)
+- [lib/fal.ts:6-20](file://lib/fal.ts#L6-L20)
+- [app/api/fal/proxy/route.ts:4-17](file://app/api/fal/proxy/route.ts#L4-L17)
 
 ## 详细组件分析
 
 ### FAL 客户端封装（lib/fal.ts）
 - 配置代理地址：初始化时设置代理 URL，使客户端以代理模式访问 FAL
+- 请求中间件：动态从状态存储获取 API 密钥，注入到请求头中
 - 图像生成：构造基础输入参数，合并提示词与可选参考图 URL，支持自动图像尺寸检测和分辨率设置，调用订阅接口获取首张图片 URL
 - 图像编辑：将目标图 URL 放在首位，合并参考图，调用订阅接口获取编辑结果
 - 文件上传：通过存储模块上传本地文件，返回可公开访问的 URL
 
-**更新** 新增分辨率和宽高比参数支持，增强错误处理和调试日志功能。
+**更新** 新增请求中间件功能，支持动态注入用户自定义 API 密钥，增强错误处理和调试日志功能。
 
 ```mermaid
 flowchart TD
 Start(["进入 generateImage"]) --> Merge["合并基础参数与提示词<br/>可选附加 image_urls<br/>支持分辨率和宽高比设置"]
-Merge --> Call["调用 fal.subscribe 模型"]
+Merge --> Middleware["请求中间件检查<br/>从 store 获取 falApiKey"]
+Middleware --> Call["调用 fal.subscribe 模型"]
 Call --> Parse["解析响应数据<br/>提取首张图片 URL<br/>包含尺寸信息"]
 Parse --> End(["返回 URL"])
 Start2(["进入 editImage"]) --> Prepend["将目标图 URL 置前<br/>合并参考图 URL"]
@@ -155,14 +170,15 @@ Parse2 --> End2(["返回 URL"])
 ```
 
 **图表来源**
-- [lib/fal.ts:17-85](file://lib/fal.ts#L17-L85)
+- [lib/fal.ts:17-106](file://lib/fal.ts#L17-L106)
 
 **章节来源**
-- [lib/fal.ts:1-90](file://lib/fal.ts#L1-L90)
+- [lib/fal.ts:1-107](file://lib/fal.ts#L1-L107)
 - [__tests__/fal.test.ts:26-60](file://__tests__/fal.test.ts#L26-L60)
 
 ### 代理路由（app/api/fal/proxy/route.ts）
 - 使用官方提供的 Next.js 服务器代理工具创建路由处理器
+- 自定义 API 密钥解析：优先使用请求头中的自定义 API Key，否则使用环境变量中的密钥
 - 通过环境变量注入凭据，代理所有 GET/POST/PUT 请求到 FAL
 - 该路由是密钥保护的关键：前端只暴露代理路径，不直接接触真实密钥
 
@@ -172,22 +188,26 @@ participant F as "lib/fal.ts"
 participant R as "route.ts"
 participant K as "FAL 服务"
 F->>R : "HTTP 请求GET/POST/PUT"
+R->>R : "resolveFalAuth 解析密钥"
+R->>R : "检查 x-fal-key 请求头"
+R->>R : "检查 FAL_KEY 环境变量"
 R->>K : "转发带凭据的请求"
 K-->>R : "返回响应"
 R-->>F : "返回响应"
 ```
 
 **图表来源**
-- [app/api/fal/proxy/route.ts:1-4](file://app/api/fal/proxy/route.ts#L1-L4)
+- [app/api/fal/proxy/route.ts:3-18](file://app/api/fal/proxy/route.ts#L3-L18)
 
 **章节来源**
-- [app/api/fal/proxy/route.ts:1-4](file://app/api/fal/proxy/route.ts#L1-L4)
+- [app/api/fal/proxy/route.ts:1-19](file://app/api/fal/proxy/route.ts#L1-L19)
 - [docs/superpowers/specs/2026-03-25-lovart-design.md:134-141](file://docs/superpowers/specs/2026-03-25-lovart-design.md#L134-L141)
 
 ### 状态管理（lib/store.ts）
 - 使用 Zustand 管理会话状态（画布项、参考图、编辑目标）与持久化历史
 - 提供增删改查与批量更新操作，限制聊天历史长度，避免内存膨胀
 - 通过持久化中间件将部分状态保存至本地存储，提升用户体验
+- 新增 API 密钥管理：支持设置、存储和检索用户自定义的 FAL API 密钥
 
 ```mermaid
 classDiagram
@@ -198,12 +218,14 @@ class ZustandStore {
 +isEditingMode : boolean
 +editingTarget : StoredRef|null
 +isLoading : boolean
++falApiKey : string
 +addCanvasItem(item)
 +updateCanvasItem(id, patch)
 +removeCanvasItem(id)
 +clearCanvas()
 +setEditingMode(active, target)
 +updateEditingTarget(patch)
++setFalApiKey(key)
 +addReferenceImage(ref)
 +removeReferenceImage(id)
 +updateReferenceImage(id, patch)
@@ -219,12 +241,12 @@ ZustandStore --> Types : "使用类型定义"
 ```
 
 **图表来源**
-- [lib/store.ts:19-119](file://lib/store.ts#L19-L119)
-- [lib/types.ts:1-37](file://lib/types.ts#L1-L37)
+- [lib/store.ts:88-385](file://lib/store.ts#L88-L385)
+- [lib/types.ts:1-49](file://lib/types.ts#L1-L49)
 
 **章节来源**
-- [lib/store.ts:1-119](file://lib/store.ts#L1-L119)
-- [lib/types.ts:1-37](file://lib/types.ts#L1-L37)
+- [lib/store.ts:1-385](file://lib/store.ts#L1-L385)
+- [lib/types.ts:1-49](file://lib/types.ts#L1-L49)
 
 ### 文件上传与校验（components/chat/ReferenceUploader.tsx 与 lib/validate.ts）
 - 前端上传：选择文件后生成本地对象 URL 预览，调用上传接口获取可公开访问 URL
@@ -255,8 +277,7 @@ Done -- 是 --> Save["保存 FAL URL 并结束上传态"]
 - 支持拖拽上传、缩放平移、选择与变换（缩放、旋转、拖拽）
 - 上传完成后替换占位图与本地 URL 为 FAL CDN URL
 - 提供下载与清空功能，结合状态管理维护多图层布局
-
-**更新** 增强 blob URL 到 data URL 转换功能，确保 Tldraw 兼容性，支持自动图像尺寸检测。
+- 增强 blob URL 到 data URL 转换功能，确保 Tldraw 兼容性
 
 ```mermaid
 sequenceDiagram
@@ -274,11 +295,11 @@ CA->>ST : "更新项为最终 URL"
 
 **图表来源**
 - [components/canvas/CanvasArea.tsx:306-340](file://components/canvas/CanvasArea.tsx#L306-L340)
-- [lib/fal.ts:87-90](file://lib/fal.ts#L87-L90)
+- [lib/fal.ts:104-107](file://lib/fal.ts#L104-L107)
 - [lib/store.ts:58-92](file://lib/store.ts#L58-L92)
 
 **章节来源**
-- [components/canvas/CanvasArea.tsx:1-431](file://components/canvas/CanvasArea.tsx#L1-L431)
+- [components/canvas/CanvasArea.tsx:1-200](file://components/canvas/CanvasArea.tsx#L1-L200)
 
 ### 聊天与输入（components/chat/TextInput.tsx 与 ChatPanel.tsx）
 - 输入面板根据是否处于编辑模式决定调用生成或编辑流程
@@ -309,6 +330,59 @@ Hint --> End
 - [components/chat/TextInput.tsx:1-140](file://components/chat/TextInput.tsx#L1-L140)
 - [components/chat/ChatPanel.tsx:1-22](file://components/chat/ChatPanel.tsx#L1-L22)
 
+## API 密钥配置功能
+
+### 密钥配置流程
+系统提供了完整的 API 密钥配置功能，允许用户自定义 FAL API 密钥并安全存储：
+
+```mermaid
+flowchart TD
+Start(["用户打开 API 密钥配置"]) --> Open["TopBar 显示配置菜单"]
+Open --> Input["用户输入 API 密钥"]
+Input --> Validate["验证密钥格式"]
+Validate --> Valid{"有效？"}
+Valid -- 否 --> Error["显示错误提示"]
+Valid -- 是 --> Save["调用 setFalApiKey 存储"]
+Save --> Inject["请求中间件注入密钥"]
+Inject --> Test["测试 API 连接"]
+Test --> Success["配置成功"]
+Error --> Open
+```
+
+**图表来源**
+- [components/canvas/TopBar.tsx:138-174](file://components/canvas/TopBar.tsx#L138-L174)
+- [lib/store.ts:264-265](file://lib/store.ts#L264-L265)
+- [lib/fal.ts:6-20](file://lib/fal.ts#L6-L20)
+
+### 密钥解析逻辑
+代理路由支持两种密钥来源，具有优先级顺序：
+
+1. **请求头密钥**：优先使用请求头中的 `x-fal-key` 自定义密钥
+2. **环境变量密钥**：作为备用方案，使用环境变量 `FAL_KEY`
+
+```mermaid
+flowchart TD
+Request["收到 API 请求"] --> CheckHeader["检查 x-fal-key 请求头"]
+CheckHeader --> HasHeader{"有自定义密钥？"}
+HasHeader -- 是 --> UseHeader["使用自定义密钥"]
+HasHeader -- 否 --> CheckEnv["检查 FAL_KEY 环境变量"]
+CheckEnv --> HasEnv{"有环境变量密钥？"}
+HasEnv -- 是 --> UseEnv["使用环境变量密钥"]
+HasEnv -- 否 --> NoKey["无密钥，拒绝请求"]
+UseHeader --> Proxy["转发到 FAL 服务"]
+UseEnv --> Proxy
+NoKey --> Reject["拒绝请求"]
+```
+
+**图表来源**
+- [app/api/fal/proxy/route.ts:4-17](file://app/api/fal/proxy/route.ts#L4-L17)
+
+**章节来源**
+- [components/canvas/TopBar.tsx:138-174](file://components/canvas/TopBar.tsx#L138-L174)
+- [lib/store.ts:264-265](file://lib/store.ts#L264-L265)
+- [lib/fal.ts:6-20](file://lib/fal.ts#L6-L20)
+- [app/api/fal/proxy/route.ts:4-17](file://app/api/fal/proxy/route.ts#L4-L17)
+
 ## 依赖关系分析
 - 客户端依赖：@fal-ai/client（用于配置代理与订阅）、@fal-ai/server-proxy（用于 Next.js 代理路由）
 - UI 依赖：react、react-dom、react-konva（画布）、zustand（状态）、tailwindcss（样式）
@@ -331,7 +405,7 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
 - [app/api/fal/proxy/route.ts:1](file://app/api/fal/proxy/route.ts#L1)
 
 **章节来源**
-- [package.json:1-48](file://package.json#L1-L48)
+- [package.json:1-47](file://package.json#L1-L47)
 
 ## 性能考量
 - 上传优化：限制文件大小与格式，减少无效请求与带宽占用
@@ -339,6 +413,7 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
 - 状态优化：聊天历史截断，避免无限增长导致内存压力
 - 网络优化：代理集中转发，减少跨域与证书问题带来的额外开销
 - **更新** 增加自动图像尺寸检测功能，根据分辨率和宽高比动态计算生成尺寸，优化内存使用
+- **新增** API 密钥缓存：密钥存储在本地状态中，避免重复配置开销
 
 ## 故障排除指南
 - 上传失败
@@ -357,17 +432,23 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
   - 现象：Tldraw 无法显示生成的图片
   - 排查：检查 blob URL 到 data URL 转换功能，确认图片预加载成功
   - 参考位置：[components/canvas/CanvasArea.tsx:60-84](file://components/canvas/CanvasArea.tsx#L60-L84)
+- **新增** API 密钥配置问题
+  - 现象：API 密钥无法保存或生效
+  - 排查：确认密钥格式正确、浏览器本地存储正常、请求中间件正确注入
+  - 参考位置：[components/canvas/TopBar.tsx:171-174](file://components/canvas/TopBar.tsx#L171-L174)，[lib/fal.ts:8-18](file://lib/fal.ts#L8-L18)
 
 **章节来源**
 - [components/chat/ReferenceUploader.tsx:32-38](file://components/chat/ReferenceUploader.tsx#L32-L38)
 - [components/canvas/CanvasArea.tsx:331-337](file://components/canvas/CanvasArea.tsx#L331-L337)
 - [components/chat/TextInput.tsx:82-88](file://components/chat/TextInput.tsx#L82-L88)
 - [lib/store.ts:24-29](file://lib/store.ts#L24-L29)
+- [components/canvas/TopBar.tsx:171-174](file://components/canvas/TopBar.tsx#L171-L174)
+- [lib/fal.ts:8-18](file://lib/fal.ts#L8-L18)
 
 ## 结论
-本项目通过"客户端封装 + 代理路由"的架构，既保证了密钥安全，又提供了流畅的图像生成与编辑体验。配合完善的文件校验、状态管理与 UI 交互，形成了从输入到输出的闭环。后续可按计划文档扩展用户认证与数据库持久化，进一步完善历史记录与协作能力。
+本项目通过"客户端封装 + 代理路由"的架构，既保证了密钥安全，又提供了流畅的图像生成与编辑体验。配合完善的文件校验、状态管理与 UI 交互，形成了从输入到输出的闭环。
 
-**更新** 本次更新显著增强了后端集成能力，包括自动图像尺寸检测、基于提示的文件名生成以及改进的 blob URL 到 data URL 转换，确保与 Tldraw 的完全兼容性，提升了整体用户体验和系统稳定性。
+**更新** 本次更新显著增强了后端集成能力，包括自动图像尺寸检测、基于提示的文件名生成以及改进的 blob URL 到 data URL 转换，确保与 Tldraw 的完全兼容性。新增的 API 密钥配置功能进一步提升了系统的灵活性和安全性，允许用户自定义密钥并安全存储。后续可按计划文档扩展用户认证与数据库持久化，进一步完善历史记录与协作能力。
 
 ## 附录
 
@@ -377,15 +458,31 @@ ProxyRoute["app/api/fal/proxy/route.ts"] --> FAL_ServerProxy
 - 使用占位图与渐进式反馈提升用户体验
 - 对网络错误进行明确提示并引导重试
 - **更新** 合理设置分辨率和宽高比参数，平衡生成质量和性能
+- **新增** 定期更新和轮换 API 密钥，确保账户安全
 
 ### 扩展方法与第三方集成
 - 新增模型：在封装函数中新增对应订阅调用，保持一致的输入/输出约定
 - 更换代理：调整代理路由的凭据来源与转发策略
 - 多服务并行：在同一封装内区分不同服务的代理路径，按需切换
 - **更新** 支持自定义图像尺寸检测算法，根据具体需求调整生成策略
+- **新增** 支持多用户密钥管理，为不同用户分配独立的 API 密钥
 
 ### 错误处理与调试
 - 启用详细日志记录，便于追踪 API 调用过程
 - 实现重试机制，处理临时性网络错误
 - 提供友好的错误提示，指导用户进行问题排查
 - **更新** 增加 blob URL 转换失败的降级处理，确保系统稳定性
+- **新增** API 密钥验证机制，确保密钥有效性并提供清晰的错误反馈
+
+### API 密钥配置指南
+- **配置入口**：通过顶部栏菜单中的"Configure API Key"选项进入配置界面
+- **密钥格式**：支持标准的 FAL API 密钥格式，建议使用 512 位密钥
+- **存储机制**：密钥存储在本地状态中，重启浏览器后需要重新配置
+- **安全考虑**：密钥仅存储在客户端，不会上传到任何服务器
+- **故障排除**：如遇密钥失效，可通过配置界面重新设置或清除现有密钥
+
+**章节来源**
+- [components/canvas/TopBar.tsx:138-174](file://components/canvas/TopBar.tsx#L138-L174)
+- [lib/store.ts:264-265](file://lib/store.ts#L264-L265)
+- [lib/fal.ts:6-20](file://lib/fal.ts#L6-L20)
+- [app/api/fal/proxy/route.ts:4-17](file://app/api/fal/proxy/route.ts#L4-L17)
