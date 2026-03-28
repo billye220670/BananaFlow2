@@ -1075,26 +1075,28 @@ export function CanvasArea() {
         // 记住旧 shape 的位置（使用 tldraw 中的实际位置，而非 store 中的）
         const oldX = existingShape.x
         const oldY = existingShape.y
-        const oldW = (existingShape.props as { w?: number })?.w ?? item.width
-        const oldH = (existingShape.props as { h?: number })?.h ?? item.height
+        // 尺寸使用 item 的最新值（store 中已更新为 FAL API 返回的实际比例尺寸）
+        // 不从旧的 geo shape 读取，因为那是正方形占位符尺寸
+        const newW = item.width
+        const newH = item.height
 
-        console.log('[CanvasArea] placeholder -> image transition for:', item.id, 'at position:', { x: oldX, y: oldY, w: oldW, h: oldH })
+        console.log('[CanvasArea] placeholder -> image transition for:', item.id, 'at position:', { x: oldX, y: oldY, w: newW, h: newH })
 
         syncingRef.current = true
 
         // 先删除旧的 geo 矩形（释放 shapeId）
         editor.deleteShape(shapeId)
 
-        // 创建新的 image shape，使用保存的位置
-        const itemWithOldPosition = {
+        // 创建新的 image shape，使用保存的位置和更新后的尺寸
+        const itemWithUpdatedSize = {
           ...item,
           x: oldX,
           y: oldY,
-          width: oldW,
-          height: oldH,
+          width: newW,
+          height: newH,
         }
 
-        createTldrawImageFromItem(editor, itemWithOldPosition).then((newShapeId) => {
+        createTldrawImageFromItem(editor, itemWithUpdatedSize).then((newShapeId) => {
           if (!isMounted) return
 
           if (newShapeId) {
