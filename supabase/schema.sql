@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS users (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   phone VARCHAR(20) UNIQUE NOT NULL,
   password_hash VARCHAR(255),
-  nickname VARCHAR(100),
+  nickname VARCHAR(50),
+  avatar_url TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

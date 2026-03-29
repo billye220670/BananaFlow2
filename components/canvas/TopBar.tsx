@@ -3,17 +3,29 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useEditor, track } from 'tldraw'
-import { Zap, MessageCircle, User, Key } from 'lucide-react'
+import { Zap, MessageCircle, User, Key, LogOut, Settings } from 'lucide-react'
 import { CustomTooltip } from '@/components/ui/tooltip'
 import { useAppStore } from '@/lib/store'
 
-// 手机号脱敏函数
-function maskPhone(phone: string | undefined | null): string {
-  if (!phone) return '用户'
-  if (phone.length === 11) {
-    return phone.slice(0, 3) + '****' + phone.slice(7)
+// 获取用户显示名称
+function getUserDisplayName(user: { nickname: string | null; phone: string } | null): string {
+  if (!user) return '用户'
+  if (user.nickname) return user.nickname
+  if (user.phone.length === 11) {
+    return user.phone.slice(0, 3) + '****' + user.phone.slice(7)
   }
-  return phone
+  return user.phone
+}
+
+// 获取用户头像显示内容
+function getUserAvatar(user: { nickname: string | null; avatar_url: string | null } | null): { type: 'image' | 'text'; content: string } {
+  if (user?.avatar_url) {
+    return { type: 'image', content: user.avatar_url }
+  }
+  if (user?.nickname) {
+    return { type: 'text', content: user.nickname.charAt(0).toUpperCase() }
+  }
+  return { type: 'text', content: 'U' }
 }
 
 // ── Logo 图片组件 ────────────────────────────────────────────────────────────
@@ -271,12 +283,110 @@ const LogoMenuButton = () => {
   )
 }
 
+// ── 用户菜单组件 ────────────────────────────────────────────────────────────
+function UserMenuButton() {
+  const user = useAppStore(s => s.user)
+  const clearUser = useAppStore(s => s.clearUser)
+  const router = useRouter()
+  const [isOpen, setIsOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  
+  // 点击外部关闭菜单
+  useEffect(() => {
+    if (!isOpen) return
+    
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setIsOpen(false)
+      }
+    }
+    
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [isOpen])
+  
+  // 退出登录
+  const handleLogout = async () => {
+    await fetch('/api/auth/signout', { method: 'POST' })
+    clearUser()
+    setIsOpen(false)
+    router.push('/login')
+  }
+  
+  // 跳转到个人资料页
+  const handleGoToProfile = () => {
+    setIsOpen(false)
+    router.push('/profile')
+  }
+  
+  const avatar = getUserAvatar(user)
+  const displayName = getUserDisplayName(user)
+  
+  return (
+    <div ref={menuRef} className="relative">
+      <CustomTooltip content="Profile" side="bottom">
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex items-center gap-2 px-2 py-1 rounded-full hover:bg-gray-100 transition-colors"
+        >
+          {/* 头像 */}
+          <div className="w-7 h-7 rounded-full bg-indigo-500 flex items-center justify-center overflow-hidden">
+            {avatar.type === 'image' ? (
+              <img 
+                src={avatar.content} 
+                alt={displayName}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <span className="text-sm font-medium text-white">{avatar.content}</span>
+            )}
+          </div>
+          {/* 昵称 */}
+          <span className="text-sm font-medium text-gray-700 hidden sm:block max-w-[100px] truncate">
+            {displayName}
+          </span>
+        </button>
+      </CustomTooltip>
+      
+      {/* 下拉菜单 */}
+      {isOpen && (
+        <div className="absolute top-full right-0 mt-1 w-48 rounded-lg bg-white border border-gray-200 shadow-lg py-1 z-50">
+          {/* 用户信息 */}
+          <div className="px-3 py-2 border-b border-gray-100">
+            <p className="text-sm font-medium text-gray-900 truncate">{displayName}</p>
+            {user?.phone && (
+              <p className="text-xs text-gray-500 truncate">{user.phone}</p>
+            )}
+          </div>
+          
+          {/* 菜单项 */}
+          <button
+            onClick={handleGoToProfile}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+            <span>个人资料</span>
+          </button>
+          
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>退出登录</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── TopBar 主组件 ────────────────────────────────────────────────────────────
 export const TopBar = track(() => {
   const isChatOpen = useAppStore(s => s.isChatOpen)
   const toggleChat = useAppStore(s => s.toggleChat)
   const user = useAppStore(s => s.user)
-  const clearUser = useAppStore(s => s.clearUser)
+  const setUser = useAppStore(s => s.setUser)
   const router = useRouter()
   
   // 组件挂载时获取用户信息
@@ -285,18 +395,11 @@ export const TopBar = track(() => {
       .then(res => res.json())
       .then(data => {
         if (data.success && data.data) {
-          useAppStore.getState().setUser(data.data)
+          setUser(data.data.user)
         }
       })
       .catch(() => {})
-  }, [])
-  
-  // 退出登录
-  const handleLogout = async () => {
-    await fetch('/api/auth/signout', { method: 'POST' })
-    clearUser()
-    router.push('/login')
-  }
+  }, [setUser])
   
   return (
     <div className="absolute top-1 left-0 right-0 h-12 z-[300] pointer-events-none">
@@ -307,7 +410,7 @@ export const TopBar = track(() => {
           <EditableProjectName />
         </div>
         
-        {/* 右侧：积分 + 头像 + Chat 按钮 */}
+        {/* 右侧：积分 + 用户菜单 + Chat 按钮 */}
         <div className="flex items-center gap-1 pointer-events-auto bg-white rounded-full px-1.5 py-[4px] shadow-sm">
           {/* 积分显示 */}
           <CustomTooltip content="Credits" side="bottom">
@@ -317,24 +420,18 @@ export const TopBar = track(() => {
             </div>
           </CustomTooltip>
           
-          {/* 用户头像 */}
-          <CustomTooltip content="Profile" side="bottom">
-            <button className="w-7 h-7 flex items-center justify-center rounded-full bg-indigo-500 hover:bg-indigo-600 transition-colors">
-              <User className="w-4 h-4 text-white" />
-            </button>
-          </CustomTooltip>
+          {/* 用户菜单 */}
+          {user && <UserMenuButton />}
           
-          {/* 用户信息和退出按钮 */}
-          {user && (
-            <div className="flex items-center gap-2 pl-2 border-l border-gray-200">
-              <span className="text-sm text-zinc-500">{maskPhone(user.phone)}</span>
-              <button
-                onClick={handleLogout}
-                className="text-sm text-zinc-400 hover:text-zinc-600 transition"
-              >
-                退出
-              </button>
-            </div>
+          {/* 未登录时显示登录按钮 */}
+          {!user && (
+            <button
+              onClick={() => router.push('/login')}
+              className="flex items-center gap-1.5 px-3 py-[6px] text-sm font-medium rounded-full bg-indigo-500 hover:bg-indigo-600 text-white transition-colors"
+            >
+              <User className="w-4 h-4" />
+              <span>登录</span>
+            </button>
           )}
           
           {/* Chat 按钮 - 聊天面板打开时隐藏 */}

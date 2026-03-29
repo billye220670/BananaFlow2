@@ -9,7 +9,7 @@ const PHONE_REGEX = /^1[3-9]\d{9}$/
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { phone, password, code } = body
+    const { phone, password, code, nickname } = body
 
     // 校验手机号
     if (!phone || typeof phone !== 'string') {
@@ -22,6 +22,21 @@ export async function POST(request: NextRequest) {
     if (!PHONE_REGEX.test(phone)) {
       return NextResponse.json(
         { success: false, message: '手机号格式不正确' },
+        { status: 400 }
+      )
+    }
+
+    // 校验昵称
+    if (!nickname || typeof nickname !== 'string') {
+      return NextResponse.json(
+        { success: false, message: '请输入昵称' },
+        { status: 400 }
+      )
+    }
+
+    if (nickname.trim().length < 2 || nickname.trim().length > 20) {
+      return NextResponse.json(
+        { success: false, message: '昵称长度应在2-20个字符之间' },
         { status: 400 }
       )
     }
@@ -82,8 +97,9 @@ export async function POST(request: NextRequest) {
       .insert({
         phone,
         password_hash: passwordHash,
+        nickname: nickname.trim(),
       })
-      .select('id, phone, nickname, created_at')
+      .select('id, phone, nickname, avatar_url, created_at')
       .single()
 
     if (insertError || !newUser) {

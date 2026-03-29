@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 export default function RegisterPage() {
   const router = useRouter()
   const [phone, setPhone] = useState('')
+  const [nickname, setNickname] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [code, setCode] = useState('')
@@ -64,6 +65,15 @@ export default function RegisterPage() {
   const validateForm = () => {
     if (!validatePhone()) return false
 
+    if (!nickname.trim()) {
+      toast.error('请输入昵称')
+      return false
+    }
+    if (nickname.trim().length < 2 || nickname.trim().length > 20) {
+      toast.error('昵称长度应在2-20个字符之间')
+      return false
+    }
+
     if (!password) {
       toast.error('请输入密码')
       return false
@@ -96,7 +106,7 @@ export default function RegisterPage() {
       const res = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, password, code }),
+        body: JSON.stringify({ phone, nickname, password, code }),
       })
       const data = await res.json()
 
@@ -134,6 +144,16 @@ export default function RegisterPage() {
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             placeholder="请输入手机号"
+            className="w-full px-4 py-3 rounded-lg border border-zinc-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent transition"
+          />
+
+          {/* Nickname Input */}
+          <input
+            type="text"
+            value={nickname}
+            onChange={(e) => setNickname(e.target.value)}
+            placeholder="请输入昵称（2-20个字符）"
+            maxLength={20}
             className="w-full px-4 py-3 rounded-lg border border-zinc-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-zinc-900 focus:border-transparent transition"
           />
 
