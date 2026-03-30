@@ -5,11 +5,22 @@ import { verifyJwtFromRequest } from '@/lib/auth'
 // Auth routes that don't require authentication
 const AUTH_ROUTES = ['/api/auth']
 
-// Public pages (login/register) - redirect to home if already logged in
+// Public pages (login/register) - redirect to /projects if already logged in
 const PUBLIC_AUTH_PAGES = ['/login', '/register']
+
+// Public accessible pages (no auth required, no redirect if logged in)
+const PUBLIC_PAGES = ['/projects']
+
+// Protected pages that require authentication
+const PROTECTED_PAGES = ['/canvas']
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
+
+  // 0. Root path - redirect to /projects
+  if (pathname === '/') {
+    return NextResponse.redirect(new URL('/projects', request.url))
+  }
 
   // 1. Auth API routes - always allow
   if (AUTH_ROUTES.some(route => pathname.startsWith(route))) {
@@ -20,26 +31,31 @@ export async function middleware(request: NextRequest) {
   const payload = await verifyJwtFromRequest(request)
   const isAuthenticated = payload !== null
 
-  // 2. Login/Register pages - redirect to home if already authenticated
+  // 2. Login/Register pages - redirect to /projects if already authenticated
   if (PUBLIC_AUTH_PAGES.some(page => pathname === page || pathname.startsWith(page + '/'))) {
     if (isAuthenticated) {
-      return NextResponse.redirect(new URL('/', request.url))
+      return NextResponse.redirect(new URL('/projects', request.url))
     }
     return NextResponse.next()
   }
 
-  // 3. Protected API routes (non-auth APIs) - return 401 if not authenticated
+  // 3. Public pages (like /projects) - allow all users
+  if (PUBLIC_PAGES.some(page => pathname === page || pathname.startsWith(page + '/'))) {
+    return NextResponse.next()
+  }
+
+  // 4. Protected API routes (non-auth APIs) - return 401 if not authenticated
   if (pathname.startsWith('/api/')) {
     if (!isAuthenticated) {
       return NextResponse.json(
-        { error: 'Unauthorized', message: '请先登录' },
+        { success: false, error: 'Unauthorized', message: '请先登录' },
         { status: 401 }
       )
     }
     return NextResponse.next()
   }
 
-  // 4. Protected pages (everything else including /) - redirect to login if not authenticated
+  // 5. Protected pages (canvas and others) - redirect to login if not authenticated
   if (!isAuthenticated) {
     const loginUrl = new URL('/login', request.url)
     loginUrl.searchParams.set('redirect', pathname)

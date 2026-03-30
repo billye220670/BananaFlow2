@@ -7,6 +7,7 @@ import "tldraw/tldraw.css"
 import { useAppStore, canvasItemIdToShapeId, shapeIdToCanvasItemId } from "@/lib/store"
 import { validateFile } from "@/lib/validate"
 import { uploadFile } from "@/lib/fal"
+import { uploadCanvasAsset } from "@/lib/project-service"
 import { toast } from "sonner"
 import { X, Minus, Plus } from "lucide-react"
 import { CustomTooltip } from "@/components/ui/tooltip"
@@ -85,6 +86,8 @@ async function preloadImageUrl(url: string): Promise<boolean> {
 
 // ── Helper: Create tldraw asset + image shape from CanvasItem ───────────────
 // Returns shapeId on success, or null if image creation failed
+// 主路径：URL 应该已经是 https URL（来自 Storage）
+// Fallback：如果仍然是 blob URL，转换为 data URL
 async function createTldrawImageFromItem(editor: Editor, item: CanvasItem): Promise<TLShapeId | null> {
   if (item.placeholder) {
     // Create geo shape as placeholder
@@ -111,9 +114,11 @@ async function createTldrawImageFromItem(editor: Editor, item: CanvasItem): Prom
     }
   }
 
-  // Convert blob URL to data URL if needed (tldraw only accepts http:, https:, data: protocols)
+  // 主路径：URL 应该已经是 https URL（来自 Storage 即时上传）
+  // Fallback：如果仍然是 blob URL，转换为 data URL（兼容旧逻辑）
   let imageSrc = item.url
   if (imageSrc.startsWith('blob:')) {
+    console.log('[createTldrawImageFromItem] Fallback: converting blob URL to data URL for item:', item.id)
     try {
       imageSrc = await blobUrlToDataUrl(imageSrc)
     } catch (err) {
@@ -122,7 +127,7 @@ async function createTldrawImageFromItem(editor: Editor, item: CanvasItem): Prom
     }
   }
 
-  // For HTTPS URLs (like FAL CDN), preload to ensure accessibility
+  // For HTTPS URLs (like Storage/FAL CDN), preload to ensure accessibility
   if (imageSrc.startsWith('https://')) {
     const preloadSuccess = await preloadImageUrl(imageSrc)
     if (!preloadSuccess) {
@@ -178,7 +183,7 @@ function generateDefaultName(editor: Editor, excludeAssetId?: string): string {
   const existingNames = new Set(
     assets
       .filter(a => !excludeAssetId || a.id !== excludeAssetId)
-      .map(a => (a.props as any).name?.toLowerCase())
+      .map(a => (a.props as { name?: string }).name?.toLowerCase())
   )
   let i = 1
   while (existingNames.has(`image_${i}`)) i++
@@ -353,7 +358,7 @@ const AnnotationOverlay = track(() => {
     
     if (isSelectedImage && selectedShape && selectedBounds) {
       const assetId = (selectedShape.props as { assetId?: string }).assetId || null
-      const asset = assetId ? editor.getAsset(assetId as any) : null
+      const asset = assetId ? editor.getAsset(assetId as TLAssetId) : null
       const displayName = (asset?.props as { name?: string })?.name || 'Image'
       const imageSize = `${Math.round(selectedBounds.w)} × ${Math.round(selectedBounds.h)}`
       const isInsideFrame = (() => {
@@ -396,7 +401,7 @@ const AnnotationOverlay = track(() => {
 
   // 修复3: 从缓存读取图片名称、尺寸等数据（这些在拖拽时不变）
   const assetId = cachedSelectedData?.assetId || null
-  const asset = assetId ? editor.getAsset(assetId as any) : null
+  const asset = assetId ? editor.getAsset(assetId as TLAssetId) : null
   const displayName = cachedSelectedData?.displayName || 'Image'
   const truncatedName = displayName.length > 25 ? displayName.slice(0, 25) + '...' : displayName
   // 尺寸需要实时计算（拖拽时变化）
@@ -420,9 +425,10 @@ const AnnotationOverlay = track(() => {
         finalName = generateDefaultName(editor, assetId)
       }
       if (finalName !== displayName && asset) {
+        // 使用类型断言处理自定义 name 属性
         editor.updateAssets([{
           ...asset,
-          props: { ...asset.props, name: finalName }
+          props: { ...asset.props, name: finalName } as typeof asset.props
         }])
       }
     }
@@ -593,7 +599,7 @@ const PlaceholderShimmerOverlay = track(function PlaceholderShimmerOverlay() {
   const zoom = camera.z
   
   const canvasItems = useAppStore.getState().canvasItems
-  const placeholderItems = canvasItems.filter(item => item.placeholder)
+  const placeholderItems = canvasItems.filter(item => item.placeholder || item.uploading)
   
   if (placeholderItems.length === 0) return null
   
@@ -653,8 +659,6 @@ export function CanvasArea() {
     canvasItems,
     setEditingMode,
     addCanvasItem,
-    updateCanvasItem,
-    removeCanvasItem,
     editor,
     setEditor,
     selectedShapeIds,
@@ -697,6 +701,9 @@ export function CanvasArea() {
   // 保护机制：记录刚完成 placeholder → image 过渡的 item，防止 tldraw store listener 覆盖尺寸
   // 这些 item 在短时间内不会被 tldraw 同步覆盖尺寸
   const recentlyTransitionedRef = useRef<Set<string>>(new Set())
+
+  // [ProjectRestore] 追踪 isRestoringProject 状态变化，用于清空追踪数据
+  const isRestoringRef = useRef(false)
 
   // Hide tldraw UI panels and register AnnotationOverlay
   const tldrawComponents = useMemo<Partial<TLComponents>>(() => ({
@@ -848,6 +855,11 @@ export function CanvasArea() {
 
   // Handle editor mount
   const handleMount = useCallback((ed: Editor) => {
+    // 新编辑器挂载，清空旧的追踪数据
+    processedItemsRef.current.clear()
+    if (placeholderIdsRef.current) placeholderIdsRef.current.clear()
+    if (recentlyTransitionedRef.current) recentlyTransitionedRef.current.clear()
+
     setEditor(ed)
 
     // 设置 tldraw UI 为亮色主题
@@ -855,6 +867,100 @@ export function CanvasArea() {
 
     // 默认启用网格显示
     ed.updateInstanceState({ isGridMode: true })
+
+    // ── 覆盖 tldraw 默认的 files handler ──
+    // 拦截拖拽/粘贴的文件，使用我们的 placeholder + upload 流程
+    ed.registerExternalContentHandler('files', async ({ files, point }) => {
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) continue
+        
+        const err = validateFile(file)
+        if (err) {
+          toast.error(err)
+          continue
+        }
+        
+        const id = nanoid()
+        const localUrl = URL.createObjectURL(file)
+        
+        // 获取拖放位置
+        const dropX = point?.x ?? 60
+        const dropY = point?.y ?? 60
+        
+        // 创建占位 canvasItem（触发 geo shape + shimmer）
+        useAppStore.getState().addCanvasItem({
+          id,
+          url: '',
+          falUrl: null,
+          x: dropX,
+          y: dropY,
+          width: 0,
+          height: 0,
+          uploading: true,
+          placeholder: true,
+        })
+        
+        // 异步获取尺寸
+        const img = new Image()
+        img.onload = () => {
+          const maxW = 480
+          const scale = Math.min(maxW / img.naturalWidth, maxW / img.naturalHeight, 1)
+          const width = Math.round(img.naturalWidth * scale)
+          const height = Math.round(img.naturalHeight * scale)
+          useAppStore.getState().updateCanvasItem(id, {
+            width,
+            height,
+            naturalWidth: img.naturalWidth,
+            naturalHeight: img.naturalHeight,
+            fileName: file.name,
+          })
+        }
+        img.src = localUrl
+        
+        // 上传到 Storage 和 FAL（并行执行）
+        const assetId = `user-upload-${id}`
+        
+        try {
+          const [storageUrl, falUrl] = await Promise.all([
+            uploadCanvasAsset(file, assetId).catch(err => {
+              console.error('[CanvasArea] files handler: Storage upload failed:', err)
+              return null
+            }),
+            uploadFile(file).catch(err => {
+              console.error('[CanvasArea] files handler: FAL upload failed:', err)
+              return null
+            }),
+          ])
+          
+          const finalUrl = storageUrl || falUrl || localUrl
+          const finalFalUrl = falUrl || storageUrl || null
+          
+          console.log('[CanvasArea] files handler: Upload complete - storageUrl:', storageUrl?.substring(0, 60), 'falUrl:', falUrl?.substring(0, 60))
+          
+          useAppStore.getState().updateCanvasItem(id, {
+            url: finalUrl,
+            falUrl: finalFalUrl,
+            uploading: false,
+            placeholder: false,
+          })
+          
+          if (!storageUrl && !falUrl) {
+            toast.error('上传失败，使用本地预览')
+          }
+        } catch (error) {
+          console.error('[CanvasArea] files handler: Upload failed:', error)
+          toast.error(`上传失败: ${error instanceof Error ? error.message : '请检查网络连接'}`)
+          useAppStore.getState().updateCanvasItem(id, {
+            url: localUrl,
+            uploading: false,
+            placeholder: false,
+          })
+        }
+        
+        // 注意：不要在这里 revokeObjectURL，因为如果上传失败我们还需要用它
+        // URL 会在 canvasItem 被删除或 url 被替换时自动回收
+      }
+    })
 
     // 默认设置画布背景色为 95% 白色 (#F2F2F2)
     requestAnimationFrame(() => {
@@ -918,17 +1024,32 @@ export function CanvasArea() {
     container.addEventListener('pointerup', handleMarkerClick, true)  // capture: true
 
     // Initial sync: create shapes for existing canvasItems
-    const currentItems = useAppStore.getState().canvasItems
-    const itemsToProcess = currentItems.filter(item => !item.uploading || item.placeholder)
-    Promise.all(itemsToProcess.map(async (item) => {
-      const shapeId = await createTldrawImageFromItem(ed, item)
-      if (shapeId) {
-        processedItemsRef.current.add(item.id)
-        if (item.placeholder) {
-          placeholderIdsRef.current.add(item.id)
+    // [修复A] 只在非恢复场景下执行初始同步，避免覆盖 loadSnapshot 已恢复的 shapes/assets
+    const isRestoring = useAppStore.getState().isRestoringProject
+    // 检查 URL 中是否有要恢复的项目（非 new）
+    const searchParams = new URLSearchParams(window.location.search)
+    const projectParam = searchParams.get('project')
+    const hasPendingRestore = projectParam && projectParam !== 'new'
+
+    if (hasPendingRestore) {
+      // 有项目要恢复，跳过初始同步，让 initProject 通过 loadSnapshot 处理
+      console.log('[CanvasArea] Project restore pending, skipping initial sync')
+    } else if (!isRestoring) {
+      // 没有项目要恢复的全新画布，执行初始同步
+      const currentItems = useAppStore.getState().canvasItems
+      const itemsToProcess = currentItems.filter(item => !item.uploading || item.placeholder)
+      Promise.all(itemsToProcess.map(async (item) => {
+        const shapeId = await createTldrawImageFromItem(ed, item)
+        if (shapeId) {
+          processedItemsRef.current.add(item.id)
+          if (item.placeholder) {
+            placeholderIdsRef.current.add(item.id)
+          }
         }
-      }
-    }))
+      }))
+    } else {
+      console.log('[CanvasArea] Skipping initial sync during project restore')
+    }
 
     // Listen for tldraw store changes
     const unsub = ed.store.listen((entry: TLStoreEventInfo) => {
@@ -936,7 +1057,7 @@ export function CanvasArea() {
 
       const { changes } = entry
 
-      // Handle newly added shapes (tldraw native image drops, paste, etc.)
+      // Handle newly added shapes (tldraw native image drops, paste, loadSnapshot restore, etc.)
       // These bypass handleExternalDrop so we must sync them into canvasItems here
       if (changes.added) {
         // First pass: process image shapes
@@ -951,19 +1072,37 @@ export function CanvasArea() {
           const asset = assetId ? ed.getAsset(assetId) : null
           const url = (asset?.props as { src?: string })?.src ?? ''
           const fileName = (asset?.props as { name?: string })?.name
-          console.log('[CanvasArea] native drop asset:', asset, 'url:', url ? url.substring(0, 50) + '...' : '(empty)')
+          
+          // 检测是否是 data URL（tldraw 原生拖拽/粘贴创建的）
+          const isDataUrl = url.startsWith('data:')
+          console.log('[CanvasArea] shape added:', itemId, 'url:', url ? url.substring(0, 50) + '...' : '(empty)', 'isDataUrl:', isDataUrl)
+          
+          // [ProjectRestore] 使用 fromTldrawSyncRef 包裹，防止 canvasItems sync effect 反向同步
+          fromTldrawSyncRef.current = true
           useAppStore.getState().addCanvasItem({
             id: itemId,
             url,
-            falUrl: null,
+            falUrl: url.startsWith('https://') ? url : null,
             x: shape.x,
             y: shape.y,
             width: shape.props?.w ?? 400,
             height: shape.props?.h ?? 400,
-            uploading: false,
+            // data URL 表示绕过了我们的 files handler，需要上传，设置 uploading=true 触发 shimmer
+            uploading: isDataUrl,
             fileName,
           })
           processedItemsRef.current.add(itemId)
+          fromTldrawSyncRef.current = false
+          
+          // 如果是 data URL，立即隐藏原生图片，让 shimmer 可见
+          if (isDataUrl) {
+            try {
+              ed.updateShape({ id: shape.id, type: 'image', opacity: 0 })
+              console.log('[CanvasArea] Hide data URL image for shimmer:', shape.id)
+            } catch(e) {
+              console.error('[CanvasArea] Failed to hide image:', e)
+            }
+          }
 
           // Fallback: if URL is empty and we have assetId, use polling retry mechanism
           // This handles cases where asset is added asynchronously (max 5 attempts, 200ms interval)
@@ -999,40 +1138,174 @@ export function CanvasArea() {
           }
         })
 
-        // Second pass: process newly added assets and update any canvasItems with empty URLs
+        // Second pass: process newly added assets
+        // 检测 data URL assets（来自 tldraw 原生拖拽/粘贴）并上传到 Storage
         Object.values(changes.added).forEach((added) => {
           if (added.typeName !== 'asset') return
-          const assetRecord = added as { id: TLAssetId; props?: { src?: string; name?: string } }
+          
+          // [修复3] 恢复期间不触发即时上传，shapes 中的 URL 已经是 Storage URL
+          const isRestoring = useAppStore.getState().isRestoringProject
+          if (isRestoring) {
+            console.log('[CanvasArea] Skipping asset upload during project restore')
+            return
+          }
+          
+          const assetRecord = added as { id: TLAssetId; type?: string; props?: { src?: string; name?: string } }
           const assetSrc = assetRecord.props?.src
           const assetName = assetRecord.props?.name
           if (!assetSrc) return
           console.log('[CanvasArea] new asset added:', assetRecord.id, 'src:', assetSrc.substring(0, 50) + '...')
 
-          // Find canvasItems with empty URL that might be using this asset
-          // Use queueMicrotask to avoid modifying zustand during tldraw store listener
-          queueMicrotask(() => {
-            if (syncingRef.current) return
-            const items = useAppStore.getState().canvasItems
-            items.forEach(item => {
-              if (item.url) return // Already has URL
-              const shapeId = canvasItemIdToShapeId(item.id)
-              const shape = ed.getShape(shapeId)
-              if (!shape || shape.type !== 'image') return
-              const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
-              if (shapeAssetId === assetRecord.id) {
-                console.log('[CanvasArea] asset match found, updating canvasItem', item.id, 'with url:', assetSrc.substring(0, 50) + '...')
-                syncingRef.current = true
-                try {
-                  useAppStore.getState().updateCanvasItem(item.id, { 
-                    url: assetSrc,
-                    ...(assetName ? { fileName: assetName } : {})
-                  })
-                } finally {
-                  syncingRef.current = false
+          // 检测 data URL asset 并上传到 Storage（避免无限循环：只处理 data: 开头的）
+          if (assetSrc.startsWith('data:image')) {
+            console.log('[CanvasArea] Detected data URL asset, uploading to Storage:', assetRecord.id)
+            
+            // 在上传前设置 uploading 状态，让 shimmer 显示
+            const shapes = ed.getCurrentPageShapes()
+            let targetShapeId: TLShapeId | null = null
+            for (const shape of shapes) {
+              if (shape.type === 'image') {
+                const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
+                if (shapeAssetId === assetRecord.id) {
+                  targetShapeId = shape.id
+                  const itemId = shapeIdToCanvasItemId(shape.id)
+                  const item = useAppStore.getState().canvasItems.find(i => i.id === itemId)
+                  if (item) {
+                    useAppStore.getState().updateCanvasItem(itemId, { uploading: true })
+                    console.log('[CanvasArea] Set uploading=true for canvasItem:', itemId)
+                  }
+                  // 上传期间隐藏图片，显示 shimmer
+                  try {
+                    ed.updateShape({ id: shape.id, type: 'image', opacity: 0 })
+                    console.log('[CanvasArea] Hide image during upload:', shape.id)
+                  } catch(e) {
+                    console.error('[CanvasArea] Failed to hide image:', e)
+                  }
+                  break
                 }
               }
+            }
+            
+            // Fire-and-forget async upload
+            ;(async () => {
+              try {
+                // 将 data URL 转换为 Blob
+                const response = await fetch(assetSrc)
+                const blob = await response.blob()
+                
+                // 上传到 Storage
+                const storageUrl = await uploadCanvasAsset(blob, assetRecord.id)
+                console.log('[CanvasArea] Asset uploaded to Storage:', assetRecord.id, '->', storageUrl.substring(0, 60) + '...')
+                
+                // 使用 editor.store.put 更新 asset src 为 Storage URL
+                const currentAsset = ed.getAsset(assetRecord.id)
+                if (currentAsset && currentAsset.type === 'image') {
+                  ed.store.put([{
+                    ...currentAsset,
+                    props: {
+                      ...currentAsset.props,
+                      src: storageUrl,
+                    },
+                  }])
+                  console.log('[CanvasArea] Asset src updated to Storage URL:', assetRecord.id)
+                  
+                  // 上传完成，恢复图片显示
+                  if (targetShapeId) {
+                    try {
+                      const finalShape = ed.getShape(targetShapeId)
+                      if (finalShape) {
+                        ed.updateShape({ id: targetShapeId, type: 'image', opacity: 1 })
+                        console.log('[CanvasArea] Restore image after upload:', targetShapeId)
+                      }
+                    } catch(e) {
+                      console.error('[CanvasArea] Failed to restore image:', e)
+                    }
+                  }
+                  
+                  // 同时更新对应的 canvasItem 的 url
+                  // 找到使用该 asset 的 shape，然后找到对应的 canvasItem
+                  const shapes = ed.getCurrentPageShapes()
+                  for (const shape of shapes) {
+                    if (shape.type === 'image') {
+                      const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
+                      if (shapeAssetId === assetRecord.id) {
+                        const itemId = shapeIdToCanvasItemId(shape.id)
+                        const item = useAppStore.getState().canvasItems.find(i => i.id === itemId)
+                        if (item) {
+                          syncingRef.current = true
+                          try {
+                            useAppStore.getState().updateCanvasItem(itemId, {
+                              url: storageUrl,
+                              falUrl: storageUrl, // Storage URL 可以直接用作 FAL URL
+                              uploading: false, // 上传完成，清除 uploading 状态
+                            })
+                            console.log('[CanvasArea] canvasItem url updated:', itemId)
+                          } finally {
+                            syncingRef.current = false
+                          }
+                        }
+                        break
+                      }
+                    }
+                  }
+                }
+              } catch (err) {
+                console.error('[CanvasArea] Failed to upload data URL asset to Storage:', err)
+                // 上传失败不阻止用户操作，data URL 仍然可用
+                // 恢复图片显示，避免图片永远隐藏
+                if (targetShapeId) {
+                  try {
+                    const finalShape = ed.getShape(targetShapeId)
+                    if (finalShape) {
+                      ed.updateShape({ id: targetShapeId, type: 'image', opacity: 1 })
+                      console.log('[CanvasArea] Restore image after failure:', targetShapeId)
+                    }
+                  } catch(e) {
+                    console.error('[CanvasArea] Failed to restore image:', e)
+                  }
+                }
+                // 清除 uploading 状态，防止 shimmer 永远显示
+                const shapes = ed.getCurrentPageShapes()
+                for (const shape of shapes) {
+                  if (shape.type === 'image') {
+                    const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
+                    if (shapeAssetId === assetRecord.id) {
+                      const itemId = shapeIdToCanvasItemId(shape.id)
+                      useAppStore.getState().updateCanvasItem(itemId, { uploading: false })
+                      console.log('[CanvasArea] Cleared uploading state after failure:', itemId)
+                      break
+                    }
+                  }
+                }
+              }
+            })()
+          } else {
+            // 非 data URL asset（如 https URL），更新 canvasItems with empty URLs
+            // Use queueMicrotask to avoid modifying zustand during tldraw store listener
+            queueMicrotask(() => {
+              if (syncingRef.current) return
+              const items = useAppStore.getState().canvasItems
+              items.forEach(item => {
+                if (item.url) return // Already has URL
+                const shapeId = canvasItemIdToShapeId(item.id)
+                const shape = ed.getShape(shapeId)
+                if (!shape || shape.type !== 'image') return
+                const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
+                if (shapeAssetId === assetRecord.id) {
+                  console.log('[CanvasArea] asset match found, updating canvasItem', item.id, 'with url:', assetSrc.substring(0, 50) + '...')
+                  syncingRef.current = true
+                  try {
+                    useAppStore.getState().updateCanvasItem(item.id, { 
+                      url: assetSrc,
+                      ...(assetName ? { fileName: assetName } : {})
+                    })
+                  } finally {
+                    syncingRef.current = false
+                  }
+                }
+              })
             })
-          })
+          }
         })
       }
 
@@ -1128,6 +1401,24 @@ export function CanvasArea() {
   // Sync canvasItems changes to tldraw
   // 修复2: 如果这次 canvasItems 变化来自 tldraw store listener，跳过反向同步
   useEffect(() => {
+    // [ProjectRestore] 如果正在恢复项目，跳过 sync effect
+    const isRestoring = useAppStore.getState().isRestoringProject
+    if (isRestoring) {
+      console.log('[CanvasArea] skipping sync effect - isRestoringProject')
+      isRestoringRef.current = true
+      return
+    }
+    
+    // [ProjectRestore] 项目恢复刚完成时，清空追踪数据，防止旧数据导致误删
+    if (!isRestoring && isRestoringRef.current) {
+      console.log('[CanvasArea] project restore completed - clearing tracking refs')
+      processedItemsRef.current.clear()
+      placeholderIdsRef.current.clear()
+      recentlyTransitionedRef.current.clear()
+      isRestoringRef.current = false
+      return // 跳过本轮 sync，让下一轮正常处理
+    }
+    
     if (!editor || syncingRef.current || fromTldrawSyncRef.current) return
 
     // 修复：isMounted 标志防止组件卸载后执行状态更新
@@ -1259,6 +1550,12 @@ export function CanvasArea() {
           syncingRef.current = false
         })
       } else if (existingShape) {
+        // Shape 已存在（可能是通过 loadSnapshot 恢复的）
+        // 确保将其添加到 processedItemsRef
+        if (!processedItemsRef.current.has(item.id)) {
+          processedItemsRef.current.add(item.id)
+        }
+        
         // Update existing shape position/size if needed
         const needsUpdate = 
           existingShape.x !== item.x ||
@@ -1356,6 +1653,7 @@ export function CanvasArea() {
   }, [selectedShapeIds, canvasItems, setEditingMode])
 
   // File drop handler for external drops
+  // 改进流程：先上传到 Storage 获取 https URL，再创建 canvasItem
   const handleExternalDrop = useCallback(
     async (e: React.DragEvent) => {
       // Only handle drops outside tldraw (tldraw handles its own drops)
@@ -1381,15 +1679,18 @@ export function CanvasArea() {
 
       const id = nanoid()
       const localUrl = URL.createObjectURL(file)
+      
+      // 先添加 canvasItem 作为占位（单一事实来源：不使用本地 URL，等待云端 URL）
       addCanvasItem({ 
         id, 
-        url: localUrl, 
+        url: '', 
         falUrl: null, 
         x: dropX, 
         y: dropY, 
         width: 0, 
         height: 0, 
-        uploading: true 
+        uploading: true,
+        placeholder: true
       })
 
       // Load image to get dimensions
@@ -1409,14 +1710,48 @@ export function CanvasArea() {
       }
       img.src = localUrl
 
+      // 上传到 Storage 和 FAL（并行执行）
+      const assetId = `user-upload-${id}`
+      
       try {
-        const falUrl = await uploadFile(file)
-        useAppStore.getState().updateCanvasItem(id, { falUrl, uploading: false })
+        // 并行上传到 Storage 和 FAL
+        const [storageUrl, falUrl] = await Promise.all([
+          uploadCanvasAsset(file, assetId).catch(err => {
+            console.error('[CanvasArea] Storage 上传失败:', err)
+            return null
+          }),
+          uploadFile(file).catch(err => {
+            console.error('[CanvasArea] FAL 上传失败:', err)
+            return null
+          }),
+        ])
+
+        // 优先使用 Storage URL，fallback 到 FAL URL，最后 fallback 到 blob URL
+        const finalUrl = storageUrl || falUrl || localUrl
+        const finalFalUrl = falUrl || storageUrl || null
+
+        console.log('[CanvasArea] Upload complete - storageUrl:', storageUrl?.substring(0, 60), 'falUrl:', falUrl?.substring(0, 60))
+
+        useAppStore.getState().updateCanvasItem(id, { 
+          url: finalUrl,
+          falUrl: finalFalUrl, 
+          uploading: false,
+          placeholder: false
+        })
+
+        // 如果 Storage 上传失败但 FAL 成功，显示警告
+        if (!storageUrl && falUrl) {
+          console.warn('[CanvasArea] Storage 上传失败，使用 FAL URL')
+        }
+        // 如果两者都失败，显示错误
+        if (!storageUrl && !falUrl) {
+          toast.error('上传失败，使用本地预览')
+        }
       } catch (error) {
         console.error('[CanvasArea] 文件上传失败:', error)
         console.error('[CanvasArea] 错误详情:', JSON.stringify(error, Object.getOwnPropertyNames(error as object), 2))
-        toast.error(`上传失败: ${error instanceof Error ? error.message : '请检查 FAL_KEY 并重启服务'}`)
-        useAppStore.getState().updateCanvasItem(id, { uploading: false })
+        toast.error(`上传失败: ${error instanceof Error ? error.message : '请检查网络连接'}`)
+        useAppStore.getState().updateCanvasItem(id, { uploading: false, placeholder: false })
       }
     },
     [editor, addCanvasItem]

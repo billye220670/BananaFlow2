@@ -19,6 +19,7 @@ export interface CanvasItem {
   id: string
   url: string           // display URL (blob or FAL CDN)
   falUrl: string | null // FAL CDN URL; null until upload completes
+  name?: string         // display name for the item
   x: number
   y: number
   width: number         // 0 = auto-size on first image load
@@ -53,4 +54,31 @@ export interface User {
   nickname: string | null
   avatar_url: string | null
   created_at: string
+}
+
+export interface ProjectMeta {
+  id: string
+  name: string
+  thumbnail_url: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ProjectDetail extends ProjectMeta {
+  snapshot: ExtendedSnapshot | null
+  snapshot_url?: string
+}
+
+export interface SaveResponse {
+  success: boolean
+  assetUrlMap?: Record<string, string>
+}
+
+export interface ExtendedSnapshot {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  tldraw: any  // TLEditorSnapshot
+  lovart?: {
+    chatHistory: Message[]
+    projectName: string
+  }
 }

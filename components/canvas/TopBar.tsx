@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useEditor, track } from 'tldraw'
-import { Zap, MessageCircle, User, Key, LogOut, Settings } from 'lucide-react'
+import { Zap, MessageCircle, User, Key, LogOut, Settings, FolderOpen, Loader2, Check, AlertCircle } from 'lucide-react'
 import { CustomTooltip } from '@/components/ui/tooltip'
 import { useAppStore } from '@/lib/store'
 
@@ -26,6 +26,36 @@ function getUserAvatar(user: { nickname: string | null; avatar_url: string | nul
     return { type: 'text', content: user.nickname.charAt(0).toUpperCase() }
   }
   return { type: 'text', content: 'U' }
+}
+
+// ── 保存状态指示器 ─────────────────────────────────────────────────────
+function SaveStatusIndicator() {
+  const saveStatus = useAppStore(s => s.saveStatus)
+  
+  if (saveStatus === 'idle') return null
+  
+  return (
+    <span className="flex items-center gap-1 text-xs ml-2">
+      {saveStatus === 'saving' && (
+        <>
+          <Loader2 className="w-3 h-3 animate-spin text-gray-400" />
+          <span className="text-gray-400">保存中...</span>
+        </>
+      )}
+      {saveStatus === 'saved' && (
+        <>
+          <Check className="w-3 h-3 text-gray-400" />
+          <span className="text-gray-400">已保存</span>
+        </>
+      )}
+      {saveStatus === 'error' && (
+        <>
+          <AlertCircle className="w-3 h-3 text-red-500" />
+          <span className="text-red-500">保存失败</span>
+        </>
+      )}
+    </span>
+  )
 }
 
 // ── Logo 图片组件 ────────────────────────────────────────────────────────────
@@ -116,6 +146,7 @@ function EditableProjectName() {
 // editor 只在事件回调中使用，不需要响应式更新
 const LogoMenuButton = () => {
   const editor = useEditor()
+  const router = useRouter()
   const [isOpen, setIsOpen] = useState(false)
   const [isConfigKeyOpen, setIsConfigKeyOpen] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState('')
@@ -141,6 +172,8 @@ const LogoMenuButton = () => {
   
   // 菜单项操作 - 使用 editor 的直接方法
   const menuItems = [
+    { label: 'Projects', icon: FolderOpen, action: () => router.push('/projects') },
+    { type: 'separator' as const },
     { label: 'Undo', shortcut: '⌘Z', action: () => editor.undo() },
     { label: 'Redo', shortcut: '⌘⇧Z', action: () => editor.redo() },
     { type: 'separator' as const },
@@ -404,10 +437,11 @@ export const TopBar = track(() => {
   return (
     <div className="absolute top-1 left-0 right-0 h-12 z-[300] pointer-events-none">
       <div className="h-full flex items-center justify-between px-3">
-        {/* 左侧：Logo + 项目名称 */}
+        {/* 左侧：Logo + 项目名称 + 保存状态 */}
         <div className="flex items-center gap-1 pointer-events-auto bg-white rounded-full pl-[4px] pr-[12px] py-[4px] shadow-sm">
           <LogoMenuButton />
           <EditableProjectName />
+          <SaveStatusIndicator />
         </div>
         
         {/* 右侧：积分 + 用户菜单 + Chat 按钮 */}

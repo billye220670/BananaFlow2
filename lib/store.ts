@@ -1,6 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
-import type { CanvasItem, StoredRef, Message, Marker, User } from "@/lib/types"
+import type { CanvasItem, StoredRef, Message, Marker, User, ProjectMeta } from "@/lib/types"
 import { nanoid } from "nanoid"
 import type { Editor, TLShapeId } from "tldraw"
 
@@ -45,6 +45,7 @@ interface Actions {
   openChat: () => void
   closeChat: () => void
   clearChatHistory: () => void
+  setChatHistory: (messages: Message[]) => void
   setChatPanelWidth: (width: number) => void
   // user actions
   setUser: (user: User | null) => void
@@ -70,7 +71,11 @@ interface PersistedSlice {
   chatHistory: Message[]
   projectName: string
   falApiKey: string
+  currentProjectId: string | null
+  setCurrentProjectId: (id: string | null) => void
 }
+
+export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 interface SessionSlice {
   canvasItems: CanvasItem[]
@@ -88,6 +93,15 @@ interface SessionSlice {
   activeTool: string
   // user
   user: User | null
+  // recent projects
+  recentProjects: ProjectMeta[]
+  setRecentProjects: (projects: ProjectMeta[]) => void
+  // project restore flag
+  isRestoringProject: boolean
+  setIsRestoringProject: (v: boolean) => void
+  // save status
+  saveStatus: SaveStatus
+  setSaveStatus: (status: SaveStatus) => void
 }
 
 export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
@@ -97,6 +111,8 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       chatHistory: [],
       projectName: 'Untitled',
       falApiKey: '',
+      currentProjectId: null,
+      setCurrentProjectId: (id) => set({ currentProjectId: id }),
 
       // session-only
       canvasItems: [],
@@ -114,6 +130,15 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       activeTool: 'select',
       // user
       user: null,
+      // recent projects
+      recentProjects: [],
+      setRecentProjects: (projects) => set({ recentProjects: projects }),
+      // project restore flag
+      isRestoringProject: false,
+      setIsRestoringProject: (v) => set({ isRestoringProject: v }),
+      // save status
+      saveStatus: 'idle' as SaveStatus,
+      setSaveStatus: (status) => set({ saveStatus: status }),
 
       // canvas actions
       addCanvasItem: (item) =>
@@ -150,7 +175,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
                   markersVersion: Date.now(),
                 },
               })
-            } catch (e) {
+            } catch {
               // editor 可能未就绪，静默忽略
             }
           }
@@ -182,7 +207,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
                   markersVersion: Date.now(),
                 },
               })
-            } catch (e) {
+            } catch {
               // editor 可能未就绪，静默忽略
             }
           }
@@ -276,6 +301,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
       openChat: () => set({ isChatOpen: true }),
       closeChat: () => set({ isChatOpen: false }),
       clearChatHistory: () => set({ chatHistory: [] }),
+      setChatHistory: (messages) => set({ chatHistory: messages }),
       setChatPanelWidth: (width) => set({ chatPanelWidth: Math.max(320, Math.min(600, width)) }),
       
       // marker actions
@@ -302,7 +328,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
                 markersVersion: Date.now(),
               },
             })
-          } catch (e) {
+          } catch {
             // editor 可能未就绪，静默忽略
           }
         }
@@ -324,7 +350,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
                   markersVersion: Date.now(),
                 },
               })
-            } catch (e) {
+            } catch {
               // editor 可能未就绪，静默忽略
             }
           }
@@ -346,7 +372,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
                   markersVersion: Date.now(),
                 },
               })
-            } catch (e) {
+            } catch {
               // editor 可能未就绪，静默忽略
             }
           }
@@ -365,7 +391,7 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
                   markersVersion: Date.now(),
                 },
               })
-            } catch (e) {
+            } catch {
               // editor 可能未就绪，静默忽略
             }
           }
@@ -389,7 +415,12 @@ export const useAppStore = create<PersistedSlice & SessionSlice & Actions>()(
         },
         removeItem: (name: string) => safeStorage.removeItem(name),
       },
-      partialize: (state) => ({ chatHistory: state.chatHistory, projectName: state.projectName, falApiKey: state.falApiKey }),
+      partialize: (state) => ({ 
+              chatHistory: state.chatHistory, 
+              projectName: state.projectName, 
+              falApiKey: state.falApiKey,
+              // currentProjectId 不持久化，由 URL 参数驱动
+            }),
     }
   )
 )
