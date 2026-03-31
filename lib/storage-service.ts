@@ -195,6 +195,30 @@ export async function fetchSnapshot(snapshotPath: string): Promise<any> {
 }
 
 /**
+ * 从 snapshot 中提取所有 asset ID（sanitized 格式）
+ * 遍历 snapshot.tldraw.document.store，收集所有以 "asset:" 开头的 key
+ * 返回 sanitized 后的 ID 列表（将 ":" 替换为 "_"）
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extractAssetIdsFromSnapshot(snapshot: any): string[] {
+  const store = snapshot?.tldraw?.document?.store
+  if (!store || typeof store !== 'object') {
+    return []
+  }
+
+  const assetIds: string[] = []
+  for (const key of Object.keys(store)) {
+    if (key.startsWith('asset:')) {
+      // 将 ":" 替换为 "_"，与上传时 assetId 的 sanitize 逻辑一致
+      const sanitizedId = key.replace(/:/g, '_')
+      assetIds.push(sanitizedId)
+    }
+  }
+
+  return assetIds
+}
+
+/**
  * 清理项目关联的所有存储资源
  * @param userId 用户 ID
  * @param projectId 项目 ID
@@ -206,59 +230,48 @@ export async function deleteProjectStorage(
   console.log('[Storage] deleteProjectStorage start:', { userId, projectId })
 
   const supabaseAdmin = getSupabaseAdmin()
-  const errors: string[] = []
+  const warnings: string[] = []
 
-  // 1. 删除快照文件
+  // 1. 构建快照路径并尝试下载
   const snapshotPath = `${userId}/${projectId}.json`
+  let assetIds: string[] = []
+
+  try {
+    const snapshot = await fetchSnapshot(snapshotPath)
+    assetIds = extractAssetIdsFromSnapshot(snapshot)
+    console.log('[Storage] Extracted asset IDs from snapshot:', { count: assetIds.length })
+  } catch (error) {
+    console.warn('[Storage] Failed to fetch snapshot for asset extraction:', error)
+    warnings.push(`Fetch snapshot: ${error instanceof Error ? error.message : String(error)}`)
+    // 优雅降级：继续删除快照文件
+  }
+
+  // 2. 删除资产文件
+  if (assetIds.length > 0) {
+    try {
+      await deleteAssets(userId, assetIds)
+      console.log('[Storage] Project assets deleted:', { count: assetIds.length })
+    } catch (error) {
+      console.warn('[Storage] Failed to delete assets:', error)
+      warnings.push(`Delete assets: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  // 3. 删除快照文件
   const { error: snapshotError } = await supabaseAdmin.storage
     .from(SNAPSHOTS_BUCKET)
     .remove([snapshotPath])
 
   if (snapshotError) {
-    console.error('[Storage] Failed to delete snapshot:', snapshotError)
-    errors.push(`Snapshot: ${snapshotError.message}`)
+    console.warn('[Storage] Failed to delete snapshot:', snapshotError)
+    warnings.push(`Delete snapshot: ${snapshotError.message}`)
   } else {
     console.log('[Storage] Snapshot deleted:', snapshotPath)
   }
 
-  // 2. 列出并删除该用户该项目相关的资源文件
-  // 资源文件存储路径格式：{userId}/{assetId}.{ext}
-  // 由于 assetId 可能包含 projectId 前缀，我们需要列出所有用户文件
-  // 然后过滤出与该项目相关的文件
-  const { data: assetFiles, error: listError } = await supabaseAdmin.storage
-    .from(ASSETS_BUCKET)
-    .list(userId, {
-      limit: 1000, // 一次最多列出 1000 个文件
-    })
-
-  if (listError) {
-    console.error('[Storage] Failed to list assets:', listError)
-    errors.push(`List assets: ${listError.message}`)
-  } else if (assetFiles && assetFiles.length > 0) {
-    // 过滤出与项目相关的文件（assetId 以 projectId 开头的文件）
-    // 注意：这取决于 assetId 的命名规则，如果 assetId 不包含 projectId，
-    // 则无法通过前缀过滤，需要在外层调用时显式传入要删除的 assetId 列表
-    // 这里我们先删除所有包含 projectId 的文件
-    const projectAssets = assetFiles
-      .filter(file => file.name.includes(projectId))
-      .map(file => `${userId}/${file.name}`)
-
-    if (projectAssets.length > 0) {
-      const { error: removeError } = await supabaseAdmin.storage
-        .from(ASSETS_BUCKET)
-        .remove(projectAssets)
-
-      if (removeError) {
-        console.error('[Storage] Failed to remove project assets:', removeError)
-        errors.push(`Remove assets: ${removeError.message}`)
-      } else {
-        console.log('[Storage] Project assets deleted:', projectAssets.length)
-      }
-    }
-  }
-
-  if (errors.length > 0) {
-    console.warn('[Storage] deleteProjectStorage completed with errors:', errors)
+  // 4. 汇总警告信息
+  if (warnings.length > 0) {
+    console.warn('[Storage] deleteProjectStorage completed with warnings:', warnings)
   } else {
     console.log('[Storage] deleteProjectStorage success:', { userId, projectId })
   }

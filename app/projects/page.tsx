@@ -2,24 +2,18 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { listProjects, createProject } from '@/lib/project-service'
+import { listProjects, createProject, deleteProject } from '@/lib/project-service'
 import { ProjectMeta, User } from '@/lib/types'
-import { Plus, LogOut, Loader2 } from 'lucide-react'
+import { Plus, LogOut, Loader2, Trash2 } from 'lucide-react'
 import Image from 'next/image'
 
-function formatRelativeTime(dateStr: string): string {
+function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffMin = Math.floor(diffMs / 60000)
-  const diffHour = Math.floor(diffMs / 3600000)
-  const diffDay = Math.floor(diffMs / 86400000)
-  
-  if (diffMin < 1) return '刚刚'
-  if (diffMin < 60) return `${diffMin} 分钟前`
-  if (diffHour < 24) return `${diffHour} 小时前`
-  if (diffDay < 30) return `${diffDay} 天前`
-  return date.toLocaleDateString()
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+  const month = months[date.getMonth()]
+  const day = date.getDate()
+  const year = date.getFullYear()
+  return `Last refined on ${month} ${day}, ${year}`
 }
 
 export default function ProjectsPage() {
@@ -29,6 +23,10 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectMeta[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isCreating, setIsCreating] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState<string>('')
 
   // 获取项目列表（仅当已登录时调用）
   const loadProjects = async () => {
@@ -106,10 +104,73 @@ export default function ProjectsPage() {
     setProjects([])
   }
 
+  const handleDeleteClick = (e: React.MouseEvent, projectId: string) => {
+    e.stopPropagation() // 防止触发卡片的 onClick 导航
+    if (deletingId) return // 正在删除中，忽略
+    setDeleteConfirmId(projectId)
+  }
+
+  const handleConfirmDelete = async (projectId: string) => {
+    setDeletingId(projectId)
+    setDeleteConfirmId(null)
+    try {
+      await deleteProject(projectId)
+      // 从列表中移除（乐观更新）
+      setProjects(prev => prev.filter(p => p.id !== projectId))
+    } catch (err) {
+      console.error('Failed to delete project:', err)
+      // 可选：显示错误提示
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  const handleRename = async (projectId: string, newName: string) => {
+    const trimmed = newName.trim()
+    if (!trimmed) {
+      setEditingId(null)
+      return // 空名称不保存
+    }
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setProjects(prev => prev.map(p => p.id === projectId ? { ...p, name: trimmed } : p))
+      }
+    } catch (err) {
+      console.error('Failed to rename:', err)
+    }
+    setEditingId(null)
+  }
+
+  const handleTitleClick = (e: React.MouseEvent, project: ProjectMeta) => {
+    e.stopPropagation()
+    setEditingId(project.id)
+    setEditingName(project.name)
+  }
+
+  const handleEditKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, projectId: string) => {
+    if (e.key === 'Enter') {
+      handleRename(projectId, editingName)
+    } else if (e.key === 'Escape') {
+      setEditingId(null)
+    }
+  }
+
+  const handleCardClick = (projectId: string) => {
+    if (deletingId === projectId) return // 删除中的卡片禁止导航
+    if (editingId) return // 编辑标题时禁止导航
+    router.push(`/canvas?project=${projectId}`)
+  }
+
   // Loading 状态
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+      <div className="min-h-screen bg-white flex items-center justify-center">
         <Loader2 className="w-8 h-8 text-violet-500 animate-spin" />
       </div>
     )
@@ -118,7 +179,7 @@ export default function ProjectsPage() {
   // 未登录 - 欢迎页
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center px-4">
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center px-4">
         {/* Logo */}
         <div className="w-24 h-24 rounded-full overflow-hidden mb-6">
           <Image
@@ -131,10 +192,10 @@ export default function ProjectsPage() {
         </div>
         
         {/* 产品名称 */}
-        <h1 className="text-4xl font-bold text-zinc-100 mb-3">Loveart</h1>
+        <h1 className="text-4xl font-bold text-gray-900 mb-3">Loveart</h1>
         
         {/* 简介 */}
-        <p className="text-zinc-400 text-lg mb-8 text-center">
+        <p className="text-gray-500 text-lg mb-8 text-center">
           AI-powered creative canvas for designers
         </p>
         
@@ -148,7 +209,7 @@ export default function ProjectsPage() {
           </button>
           <button
             onClick={() => router.push('/register')}
-            className="px-8 py-3 border border-zinc-700 text-zinc-100 font-medium rounded-lg hover:bg-zinc-900 transition-colors"
+            className="px-8 py-3 border border-gray-300 text-gray-700 font-medium rounded-lg hover:bg-gray-50 transition-colors"
           >
             注册
           </button>
@@ -159,9 +220,9 @@ export default function ProjectsPage() {
 
   // 已登录 - 项目列表
   return (
-    <div className="min-h-screen bg-zinc-950">
+    <div className="h-screen flex flex-col overflow-hidden bg-white">
       {/* 顶栏 */}
-      <header className="h-16 border-b border-zinc-800 flex items-center justify-between px-6">
+      <header className="h-16 flex items-center justify-between px-6 bg-white">
         {/* 左侧：Logo + 产品名 */}
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full overflow-hidden">
@@ -173,7 +234,7 @@ export default function ProjectsPage() {
               className="w-full h-full object-cover"
             />
           </div>
-          <span className="text-xl font-semibold text-zinc-100">Loveart</span>
+          <span className="text-xl font-semibold text-gray-900">Loveart</span>
         </div>
         
         {/* 右侧：用户信息 + 退出 */}
@@ -192,13 +253,13 @@ export default function ProjectsPage() {
                 {user?.nickname?.charAt(0) || user?.phone?.slice(-2) || 'U'}
               </div>
             )}
-            <span className="text-zinc-300 text-sm">
+            <span className="text-gray-700 text-sm">
               {user?.nickname || user?.phone || '用户'}
             </span>
           </div>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-1.5 text-zinc-400 hover:text-zinc-200 transition-colors text-sm"
+            className="flex items-center gap-1.5 text-gray-400 hover:text-gray-600 transition-colors text-sm"
           >
             <LogOut className="w-4 h-4" />
             退出
@@ -207,71 +268,138 @@ export default function ProjectsPage() {
       </header>
 
       {/* 主体区域 */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        <h2 className="text-2xl font-semibold text-zinc-100 mb-6">我的项目</h2>
+      <main className="flex-1 overflow-y-auto bg-gray-50">
+        <div className="max-w-[1800px] mx-auto px-8 py-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-6">Projects</h2>
         
         {/* 项目网格 */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {/* 新建项目卡片 */}
           <button
             onClick={handleCreate}
             disabled={isCreating}
-            className="h-48 border-2 border-dashed border-zinc-700 rounded-xl flex flex-col items-center justify-center gap-3 text-zinc-400 hover:border-violet-500 hover:text-violet-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className="relative bg-white rounded-xl p-4 hover:shadow-[0_2px_12px_rgba(0,0,0,0.08)] transition-all disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
           >
-            {isCreating ? (
-              <Loader2 className="w-10 h-10 animate-spin" />
-            ) : (
-              <Plus className="w-10 h-10" />
-            )}
-            <span className="font-medium">
-              {isCreating ? '创建中...' : '新建项目'}
-            </span>
+            {/* 灰色背景区域 - 填满卡片内部 */}
+            <div className="w-full h-full rounded-lg bg-gray-100" />
+            {/* 图标和文字居中覆盖整个卡片 */}
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+              {isCreating ? (
+                <Loader2 className="w-8 h-8 text-gray-400 animate-spin" />
+              ) : (
+                <Plus className="w-8 h-8 text-gray-700" />
+              )}
+              <span className="font-semibold text-gray-700 text-lg">
+                {isCreating ? '创建中...' : 'New Project'}
+              </span>
+            </div>
           </button>
 
           {/* 项目卡片列表 */}
           {projects.map((project) => (
             <div
               key={project.id}
-              onClick={() => router.push(`/canvas?project=${project.id}`)}
-              className="h-48 bg-zinc-900 rounded-xl cursor-pointer hover:bg-zinc-800 transition-colors overflow-hidden flex flex-col"
+              onClick={() => handleCardClick(project.id)}
+              className="group relative bg-white rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.04)] overflow-hidden cursor-pointer hover:shadow-[0_2px_12px_rgba(0,0,0,0.08)] transition-shadow p-4"
             >
               {/* 缩略图区域 */}
-              <div className="flex-1 bg-zinc-800 flex items-center justify-center">
+              <div className="aspect-[16/10] bg-gray-100 rounded-lg flex items-center justify-center relative overflow-hidden">
+                {/* 删除按钮 - 位于缩略图区域右上角 */}
+                <button
+                  onClick={(e) => handleDeleteClick(e, project.id)}
+                  disabled={deletingId === project.id}
+                  className="absolute top-2 right-2 z-10 w-8 h-8 rounded-lg bg-gray-800/70 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-gray-900/80 transition-all disabled:opacity-100 disabled:cursor-not-allowed"
+                >
+                  {deletingId === project.id ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-4 h-4" />
+                  )}
+                </button>
                 {project.thumbnail_url ? (
                   <Image
                     src={project.thumbnail_url}
                     alt={project.name}
-                    width={200}
-                    height={120}
+                    width={400}
+                    height={300}
                     className="w-full h-full object-cover"
                   />
                 ) : (
-                  <div className="text-zinc-600 text-4xl font-light">
+                  <div className="text-gray-300 text-4xl font-light">
                     {project.name.charAt(0).toUpperCase()}
                   </div>
                 )}
               </div>
               
-              {/* 项目信息 */}
-              <div className="p-3">
-                <h3 className="text-zinc-100 font-medium truncate">
-                  {project.name}
-                </h3>
-                <p className="text-zinc-500 text-sm mt-1">
-                  {formatRelativeTime(project.updated_at)}
+              {/* 项目信息（卡片内部） */}
+              <div className="px-3 py-3">
+                {editingId === project.id ? (
+                  <input
+                    type="text"
+                    value={editingName}
+                    onChange={(e) => setEditingName(e.target.value)}
+                    onBlur={() => handleRename(project.id, editingName)}
+                    onKeyDown={(e) => handleEditKeyDown(e, project.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    autoFocus
+                    onFocus={(e) => e.target.select()}
+                    className="w-full text-gray-700 font-medium text-lg bg-white border border-gray-300 rounded outline-none px-1.5 py-0.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  />
+                ) : (
+                  <h3
+                    onClick={(e) => handleTitleClick(e, project)}
+                    className="text-gray-700 font-medium text-lg truncate cursor-pointer"
+                  >
+                    {project.name}
+                  </h3>
+                )}
+                <p className="text-gray-400 text-xs mt-1">
+                  {formatDate(project.updated_at)}
                 </p>
               </div>
             </div>
           ))}
         </div>
 
-        {/* 空状态提示 */}
-        {projects.length === 0 && (
-          <p className="text-zinc-500 text-center mt-8">
-            还没有项目，点击上方按钮创建你的第一个项目
-          </p>
-        )}
+          {/* 空状态提示 */}
+          {projects.length === 0 && (
+            <p className="text-gray-400 text-center mt-8">
+              还没有项目，点击上方按钮创建你的第一个项目
+            </p>
+          )}
+        </div>
       </main>
+      {/* 删除确认弹窗 */}
+      {deleteConfirmId && (
+        <div 
+          className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center"
+          onClick={() => setDeleteConfirmId(null)}
+        >
+          <div 
+            className="bg-white rounded-2xl p-6 max-w-md mx-4 shadow-xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <p className="text-gray-900 text-lg py-4 mb-6">
+              Delete this project? This action can&apos;t be undone.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button 
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-5 py-2 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={() => handleConfirmDelete(deleteConfirmId)}
+                disabled={!!deletingId}
+                className="px-5 py-2 rounded-full bg-red-500 text-white hover:bg-red-600 disabled:opacity-50"
+              >
+                {deletingId === deleteConfirmId ? 'Deleting...' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
