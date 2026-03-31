@@ -30,7 +30,7 @@ export async function GET() {
     const supabaseAdmin = getSupabaseAdmin()
     const { data: projects, error } = await supabaseAdmin
       .from('projects')
-      .select('id, name, thumbnail_url, created_at, updated_at')
+      .select('id, name, thumbnail_url, preview_images, created_at, updated_at')
       .eq('user_id', payload.userId)
       .order('updated_at', { ascending: false })
 
@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
         user_id: payload.userId,
         name,
       })
-      .select('id, name, thumbnail_url, created_at, updated_at')
+      .select('id, name, thumbnail_url, preview_images, created_at, updated_at')
       .single()
 
     if (error) {

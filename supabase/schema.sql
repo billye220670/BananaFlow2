@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS projects (
   thumbnail_url TEXT,
   snapshot_url TEXT,  -- Storage 中快照文件的路径，格式：{userId}/{projectId}.json
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  preview_images JSONB DEFAULT '[]'
 );
 
 -- [DEPRECATED] 项目快照表
@@ -48,3 +49,6 @@ CREATE TABLE IF NOT EXISTS project_snapshots (
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_project_snapshots_project_id ON project_snapshots(project_id);
+
+-- Migration: Add preview_images column to projects table
+-- ALTER TABLE projects ADD COLUMN preview_images JSONB DEFAULT '[]';

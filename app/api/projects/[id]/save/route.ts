@@ -12,6 +12,61 @@ interface SaveRequestBody {
 }
 
 /**
+ * 提取预览图 URL（按画布面积降序，取前4张）
+ */
+function extractPreviewImages(snapshot: ExtendedSnapshot): string[] {
+  try {
+    const store = snapshot?.tldraw?.document?.store
+    if (!store) return []
+
+    // 1. 找到所有 image shapes 及其对应的 asset URL
+    const imageShapes: { url: string; area: number }[] = []
+    
+    for (const [, value] of Object.entries(store)) {
+      const record = value as { typeName?: string; type?: string; props?: { assetId?: string; w?: number; h?: number } }
+      if (record?.typeName === 'shape' && record?.type === 'image') {
+        const assetId = record?.props?.assetId
+        const w = record?.props?.w ?? 0
+        const h = record?.props?.h ?? 0
+        const area = w * h
+        
+        if (assetId) {
+          // 查找对应的 asset
+          // assetId 可能是 "asset:xxx" 格式或纯 "xxx" 格式
+          const assetKey = assetId.startsWith('asset:') ? assetId : `asset:${assetId}`
+          const asset = store[assetKey] as { props?: { src?: string } } | undefined
+          const src = asset?.props?.src
+          
+          // 仅保留 http/https URL
+          if (src && (src.startsWith('http://') || src.startsWith('https://'))) {
+            imageShapes.push({ url: src, area })
+          }
+        }
+      }
+    }
+
+    // 2. 按面积降序排序
+    imageShapes.sort((a, b) => b.area - a.area)
+
+    // 3. 去重（同一 URL 只保留面积最大的）
+    const seen = new Set<string>()
+    const unique: string[] = []
+    for (const item of imageShapes) {
+      if (!seen.has(item.url)) {
+        seen.add(item.url)
+        unique.push(item.url)
+      }
+    }
+
+    // 4. 取前4个
+    return unique.slice(0, 4)
+  } catch (e) {
+    console.error('Failed to extract preview images:', e)
+    return []
+  }
+}
+
+/**
  * 防御性检查：正常情况下所有 asset 已是 URL（Task 7 即时上传）
  * 仅作为 fallback：如果发现残留的 base64，仍然上传
  */
@@ -152,6 +207,7 @@ export async function POST(
     // Step 3: 更新 projects 表
     const updateFields: Record<string, unknown> = {
       snapshot_url: snapshotPath,
+      preview_images: extractPreviewImages(processedSnapshot),
       updated_at: new Date().toISOString(),
     }
     

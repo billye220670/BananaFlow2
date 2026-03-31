@@ -39,7 +39,7 @@ export async function GET(
     // 查询项目基本信息（包含 snapshot_url 新字段）
     const { data: project, error: projectError } = await supabaseAdmin
       .from('projects')
-      .select('id, name, thumbnail_url, snapshot_url, created_at, updated_at, user_id')
+      .select('id, name, thumbnail_url, snapshot_url, preview_images, created_at, updated_at, user_id')
       .eq('id', id)
       .single()
 
@@ -103,6 +103,7 @@ export async function GET(
       name: project.name,
       thumbnail_url: project.thumbnail_url,
       snapshot_url: project.snapshot_url,
+      preview_images: project.preview_images ?? [],
       created_at: project.created_at,
       updated_at: project.updated_at,
       snapshot,

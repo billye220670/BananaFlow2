@@ -16,6 +16,109 @@ function formatDate(dateStr: string): string {
   return `Last refined on ${month} ${day}, ${year}`
 }
 
+// 预览图缩略图组件 - 根据图片数量渲染不同布局
+function PreviewThumbnail({ images, projectName }: { images: string[]; projectName: string }) {
+  const count = images.length
+
+  // 0张图：灰色背景 + 首字母占位符
+  if (count === 0) {
+    return (
+      <div className="w-full h-full bg-gray-100 flex items-center justify-center transition-transform duration-300 group-hover:scale-110">
+        <span className="text-gray-300 text-4xl font-light">
+          {projectName.charAt(0).toUpperCase()}
+        </span>
+      </div>
+    )
+  }
+
+  // 1张图：单图铺满
+  if (count === 1) {
+    return (
+      <div className="w-full h-full relative transition-transform duration-300 group-hover:scale-110">
+        <Image
+          src={images[0]}
+          alt={projectName}
+          fill
+          className="object-cover"
+        />
+      </div>
+    )
+  }
+
+  // 2张图：左右各50%，中间2px间隙
+  if (count === 2) {
+    return (
+      <div className="w-full h-full flex gap-[2px] transition-transform duration-300 group-hover:scale-110">
+        <div className="flex-1 relative overflow-hidden">
+          <Image
+            src={images[0]}
+            alt={`${projectName} preview 1`}
+            fill
+            className="object-cover"
+          />
+        </div>
+        <div className="flex-1 relative overflow-hidden">
+          <Image
+            src={images[1]}
+            alt={`${projectName} preview 2`}
+            fill
+            className="object-cover"
+          />
+        </div>
+      </div>
+    )
+  }
+
+  // 3张图：2x2田字格，第4格灰色
+  if (count === 3) {
+    return (
+      <div className="w-full h-full grid grid-cols-2 grid-rows-2 gap-[2px] transition-transform duration-300 group-hover:scale-110">
+        <div className="relative overflow-hidden">
+          <Image
+            src={images[0]}
+            alt={`${projectName} preview 1`}
+            fill
+            className="object-cover"
+          />
+        </div>
+        <div className="relative overflow-hidden">
+          <Image
+            src={images[1]}
+            alt={`${projectName} preview 2`}
+            fill
+            className="object-cover"
+          />
+        </div>
+        <div className="relative overflow-hidden">
+          <Image
+            src={images[2]}
+            alt={`${projectName} preview 3`}
+            fill
+            className="object-cover"
+          />
+        </div>
+        <div className="bg-gray-100" />
+      </div>
+    )
+  }
+
+  // 4张及以上：2x2田字格，使用前4张
+  return (
+    <div className="w-full h-full grid grid-cols-2 grid-rows-2 gap-[2px] transition-transform duration-300 group-hover:scale-110">
+      {images.slice(0, 4).map((src, index) => (
+        <div key={index} className="relative overflow-hidden">
+          <Image
+            src={src}
+            alt={`${projectName} preview ${index + 1}`}
+            fill
+            className="object-cover"
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function ProjectsPage() {
   const router = useRouter()
   const [isLoggedIn, setIsLoggedIn] = useState<boolean | null>(null)
@@ -278,7 +381,7 @@ export default function ProjectsPage() {
           <button
             onClick={handleCreate}
             disabled={isCreating}
-            className="relative bg-white rounded-xl p-4 hover:shadow-[0_2px_12px_rgba(0,0,0,0.08)] transition-all disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
+            className="relative bg-white rounded-xl p-4 cursor-pointer hover:shadow-[0_2px_12px_rgba(0,0,0,0.08)] transition-all disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
           >
             {/* 灰色背景区域 - 填满卡片内部 */}
             <div className="w-full h-full rounded-lg bg-gray-100" />
@@ -303,7 +406,7 @@ export default function ProjectsPage() {
               className="group relative bg-white rounded-xl shadow-[0_1px_4px_rgba(0,0,0,0.04)] overflow-hidden cursor-pointer hover:shadow-[0_2px_12px_rgba(0,0,0,0.08)] transition-shadow p-4"
             >
               {/* 缩略图区域 */}
-              <div className="aspect-[16/10] bg-gray-100 rounded-lg flex items-center justify-center relative overflow-hidden">
+              <div className="aspect-[16/10] rounded-xl overflow-hidden relative">
                 {/* 删除按钮 - 位于缩略图区域右上角 */}
                 <button
                   onClick={(e) => handleDeleteClick(e, project.id)}
@@ -316,19 +419,10 @@ export default function ProjectsPage() {
                     <Trash2 className="w-4 h-4" />
                   )}
                 </button>
-                {project.thumbnail_url ? (
-                  <Image
-                    src={project.thumbnail_url}
-                    alt={project.name}
-                    width={400}
-                    height={300}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="text-gray-300 text-4xl font-light">
-                    {project.name.charAt(0).toUpperCase()}
-                  </div>
-                )}
+                <PreviewThumbnail 
+                  images={project.preview_images || []} 
+                  projectName={project.name} 
+                />
               </div>
               
               {/* 项目信息（卡片内部） */}

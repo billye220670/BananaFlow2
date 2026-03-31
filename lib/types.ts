@@ -61,6 +61,7 @@ export interface ProjectMeta {
   id: string
   name: string
   thumbnail_url: string | null
+  preview_images: string[]
   created_at: string
   updated_at: string
 }

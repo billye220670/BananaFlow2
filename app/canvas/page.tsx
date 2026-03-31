@@ -70,15 +70,33 @@ function CanvasPageContent() {
           return
         }
         
-        setCurrentProjectId(actualPid)
+        // [修复] 先加载项目，验证存在后才设置 currentProjectId
+        // 这避免了自动保存在无效 projectId 下启动
+        let project
+        try {
+          project = await loadProject(actualPid)
+        } catch (loadError) {
+          // 项目不存在或加载失败 - 自动创建新项目恢复
+          console.warn('[Project] Project not found or load failed, creating new project:', actualPid, loadError)
+          try {
+            const { projectId: newId } = await createProject('Untitled')
+            setCurrentProjectId(newId)
+            router.replace(`/canvas?project=${newId}`)
+          } catch (createError) {
+            console.error('[Project] Failed to create recovery project:', createError)
+            router.replace('/projects')
+          }
+          return
+        }
         
-        // 加载项目
-        const project = await loadProject(actualPid)
         if (!project) {
-          console.error('[Project] Project not found:', actualPid)
+          console.error('[Project] Project data is empty:', actualPid)
           router.replace('/projects')
           return
         }
+        
+        // 项目验证通过，现在可以安全地设置 currentProjectId
+        setCurrentProjectId(actualPid)
         
         // [修复] 重新获取最新的 editor（可能在 await 期间已变更）
         const currentEditor = editorRef.current
