@@ -599,7 +599,7 @@ const PlaceholderShimmerOverlay = track(function PlaceholderShimmerOverlay() {
   const zoom = camera.z
   
   const canvasItems = useAppStore.getState().canvasItems
-  const placeholderItems = canvasItems.filter(item => item.placeholder || item.uploading)
+  const placeholderItems = canvasItems.filter(item => item.placeholder || item.uploading || item.loading)
   
   if (placeholderItems.length === 0) return null
   
@@ -607,16 +607,27 @@ const PlaceholderShimmerOverlay = track(function PlaceholderShimmerOverlay() {
     <>
       {placeholderItems.map(item => {
         const shapeId = canvasItemIdToShapeId(item.id)
-        if (!editor.getShape(shapeId)) return null
+        const shape = editor.getShape(shapeId)
         
-        const bounds = editor.getShapePageBounds(shapeId)
-        if (!bounds) return null
-        
-        // 页面坐标 → 视口坐标
-        const screenX = (bounds.x + camera.x) * zoom
-        const screenY = (bounds.y + camera.y) * zoom
-        const screenW = bounds.w * zoom
-        const screenH = bounds.h * zoom
+        // 优先使用 shape 的页面坐标，如果 shape 不存在（过渡期间 geo 已删除但 image 未创建），
+        // 则 fallback 到 canvasItem 的坐标，确保 shimmer 不中断
+        let screenX: number, screenY: number, screenW: number, screenH: number
+        if (shape) {
+          const bounds = editor.getShapePageBounds(shapeId)
+          if (!bounds) return null
+          screenX = (bounds.x + camera.x) * zoom
+          screenY = (bounds.y + camera.y) * zoom
+          screenW = bounds.w * zoom
+          screenH = bounds.h * zoom
+        } else {
+          // Fallback: 使用 canvasItem 坐标（过渡期间保持 shimmer 显示）
+          const w = item.width || 400
+          const h = item.height || 400
+          screenX = (item.x + camera.x) * zoom
+          screenY = (item.y + camera.y) * zoom
+          screenW = w * zoom
+          screenH = h * zoom
+        }
         
         return (
           <div
@@ -942,6 +953,7 @@ export function CanvasArea() {
             falUrl: finalFalUrl,
             uploading: false,
             placeholder: false,
+            loading: true,  // 保持 shimmer，让 sync effect 的过渡代码统一处理 loading: false
           })
           
           if (!storageUrl && !falUrl) {
@@ -954,6 +966,7 @@ export function CanvasArea() {
             url: localUrl,
             uploading: false,
             placeholder: false,
+            loading: true,  // 保持 shimmer，让 sync effect 的过渡代码统一处理 loading: false
           })
         }
         
@@ -1053,7 +1066,9 @@ export function CanvasArea() {
 
     // Listen for tldraw store changes
     const unsub = ed.store.listen((entry: TLStoreEventInfo) => {
-      if (syncingRef.current) return
+      // [Bug#2修复] 移除入口处的 syncingRef 检查，缩小作用范围
+      // 新添加的 shapes 和删除的 shapes 不应被 syncingRef 阻止
+      // 只有 updated shapes 的同步回写需要检查 syncingRef
 
       const { changes } = entry
 
@@ -1078,21 +1093,27 @@ export function CanvasArea() {
           console.log('[CanvasArea] shape added:', itemId, 'url:', url ? url.substring(0, 50) + '...' : '(empty)', 'isDataUrl:', isDataUrl)
           
           // [ProjectRestore] 使用 fromTldrawSyncRef 包裹，防止 canvasItems sync effect 反向同步
+          // [Bug#3修复] 使用 try/finally + queueMicrotask 确保可靠重置
           fromTldrawSyncRef.current = true
-          useAppStore.getState().addCanvasItem({
-            id: itemId,
-            url,
-            falUrl: url.startsWith('https://') ? url : null,
-            x: shape.x,
-            y: shape.y,
-            width: shape.props?.w ?? 400,
-            height: shape.props?.h ?? 400,
-            // data URL 表示绕过了我们的 files handler，需要上传，设置 uploading=true 触发 shimmer
-            uploading: isDataUrl,
-            fileName,
-          })
-          processedItemsRef.current.add(itemId)
-          fromTldrawSyncRef.current = false
+          try {
+            useAppStore.getState().addCanvasItem({
+              id: itemId,
+              url,
+              falUrl: url.startsWith('https://') ? url : null,
+              x: shape.x,
+              y: shape.y,
+              width: shape.props?.w ?? 400,
+              height: shape.props?.h ?? 400,
+              // data URL 表示绕过了我们的 files handler，需要上传，设置 uploading=true 触发 shimmer
+              uploading: isDataUrl,
+              fileName,
+            })
+            processedItemsRef.current.add(itemId)
+          } finally {
+            queueMicrotask(() => {
+              fromTldrawSyncRef.current = false
+            })
+          }
           
           // 如果是 data URL，立即隐藏原生图片，让 shimmer 可见
           if (isDataUrl) {
@@ -1209,42 +1230,101 @@ export function CanvasArea() {
                   }])
                   console.log('[CanvasArea] Asset src updated to Storage URL:', assetRecord.id)
                   
-                  // 上传完成，恢复图片显示
+                  // 上传完成，进入预加载阶段（保持 shimmer）
+                  // 先不恢复图片显示，等预加载完成
                   if (targetShapeId) {
-                    try {
-                      const finalShape = ed.getShape(targetShapeId)
-                      if (finalShape) {
-                        ed.updateShape({ id: targetShapeId, type: 'image', opacity: 1 })
-                        console.log('[CanvasArea] Restore image after upload:', targetShapeId)
-                      }
-                    } catch(e) {
-                      console.error('[CanvasArea] Failed to restore image:', e)
-                    }
-                  }
-                  
-                  // 同时更新对应的 canvasItem 的 url
-                  // 找到使用该 asset 的 shape，然后找到对应的 canvasItem
-                  const shapes = ed.getCurrentPageShapes()
-                  for (const shape of shapes) {
-                    if (shape.type === 'image') {
-                      const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
-                      if (shapeAssetId === assetRecord.id) {
-                        const itemId = shapeIdToCanvasItemId(shape.id)
-                        const item = useAppStore.getState().canvasItems.find(i => i.id === itemId)
-                        if (item) {
-                          syncingRef.current = true
-                          try {
-                            useAppStore.getState().updateCanvasItem(itemId, {
-                              url: storageUrl,
-                              falUrl: storageUrl, // Storage URL 可以直接用作 FAL URL
-                              uploading: false, // 上传完成，清除 uploading 状态
-                            })
-                            console.log('[CanvasArea] canvasItem url updated:', itemId)
-                          } finally {
-                            syncingRef.current = false
+                    // 更新 canvasItem 状态
+                    const shapes = ed.getCurrentPageShapes()
+                    for (const shape of shapes) {
+                      if (shape.type === 'image') {
+                        const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
+                        if (shapeAssetId === assetRecord.id) {
+                          const itemId = shapeIdToCanvasItemId(shape.id)
+                          const item = useAppStore.getState().canvasItems.find(i => i.id === itemId)
+                          if (item) {
+                            syncingRef.current = true
+                            try {
+                              useAppStore.getState().updateCanvasItem(itemId, {
+                                url: storageUrl,
+                                falUrl: storageUrl,
+                                uploading: false,
+                                loading: true, // 保持 shimmer 直到图片完全加载
+                              })
+                              console.log('[CanvasArea] canvasItem url updated, entering preload:', itemId)
+                            } finally {
+                              syncingRef.current = false
+                            }
+                            
+                            // 预加载图片
+                            const capturedShapeId = targetShapeId
+                            const preloadImg = new Image()
+                            const loadTimeout = setTimeout(() => {
+                              // 超时 10s 也强制显示
+                              try {
+                                const finalShape = ed.getShape(capturedShapeId)
+                                if (finalShape) {
+                                  ed.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
+                                }
+                              } catch(e) {
+                                console.error('[CanvasArea] Failed to restore image on timeout:', e)
+                              }
+                              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+                            }, 10000)
+
+                            preloadImg.onload = () => {
+                              clearTimeout(loadTimeout)
+                              try {
+                                const finalShape = ed.getShape(capturedShapeId)
+                                if (finalShape) {
+                                  ed.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
+                                  console.log('[CanvasArea] Restore image after preload:', capturedShapeId)
+                                }
+                              } catch(e) {
+                                console.error('[CanvasArea] Failed to restore image after preload:', e)
+                              }
+                              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+                            }
+                            preloadImg.onerror = () => {
+                              clearTimeout(loadTimeout)
+                              try {
+                                const finalShape = ed.getShape(capturedShapeId)
+                                if (finalShape) {
+                                  ed.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
+                                }
+                              } catch(e) {
+                                console.error('[CanvasArea] Failed to restore image on error:', e)
+                              }
+                              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+                            }
+                            preloadImg.src = storageUrl
                           }
+                          break
                         }
-                        break
+                      }
+                    }
+                  } else {
+                    // 没有 targetShapeId 的情况，不应发生，但保留原有逻辑作为 fallback
+                    const shapes = ed.getCurrentPageShapes()
+                    for (const shape of shapes) {
+                      if (shape.type === 'image') {
+                        const shapeAssetId = (shape.props as { assetId?: TLAssetId })?.assetId
+                        if (shapeAssetId === assetRecord.id) {
+                          const itemId = shapeIdToCanvasItemId(shape.id)
+                          const item = useAppStore.getState().canvasItems.find(i => i.id === itemId)
+                          if (item) {
+                            syncingRef.current = true
+                            try {
+                              useAppStore.getState().updateCanvasItem(itemId, {
+                                url: storageUrl,
+                                falUrl: storageUrl,
+                                uploading: false,
+                              })
+                            } finally {
+                              syncingRef.current = false
+                            }
+                          }
+                          break
+                        }
                       }
                     }
                   }
@@ -1312,6 +1392,9 @@ export function CanvasArea() {
       // Handle shape updates (position/size changes)
       // 修复1: 使用 RAF 节流批量同步位置/尺寸更新，避免每帧多次 zustand setState
       if (changes.updated) {
+        // [Bug#2修复] 只在 updated shapes 同步回写时检查 syncingRef，避免循环
+        if (syncingRef.current) return
+        
         Object.values(changes.updated).forEach(([, after]) => {
           if (after.typeName !== 'shape') return
           const shape = after as { id: TLShapeId; type?: string; x: number; y: number; props?: { assetId?: TLAssetId; w?: number; h?: number } }
@@ -1357,6 +1440,12 @@ export function CanvasArea() {
         Object.values(changes.removed).forEach((removed) => {
           if (removed.typeName !== 'shape') return
           const itemId = shapeIdToCanvasItemId(removed.id as TLShapeId)
+          // 【关键修复】如果该 item 正在进行 placeholder->image 过渡，不要删除 canvasItem
+          // 因为过渡分支会先删除 geo shape，再创建 image shape
+          if (recentlyTransitionedRef.current.has(itemId)) {
+            console.log('[CanvasArea] skip remove handling for transitioning item:', itemId)
+            return
+          }
           const existingItem = useAppStore.getState().canvasItems.find(i => i.id === itemId)
           if (existingItem) {
             syncingRef.current = true
@@ -1444,7 +1533,7 @@ export function CanvasArea() {
       const shapeId = canvasItemIdToShapeId(item.id)
       const existingShape = editor.getShape(shapeId)
 
-      if (existingShape && existingShape.type === 'geo') {
+      if (existingShape && existingShape.type === 'geo' && !item.placeholder && item.url) {
         // 记住旧 shape 的位置（使用 tldraw 中的实际位置，而非 store 中的）
         const oldX = existingShape.x
         const oldY = existingShape.y
@@ -1459,9 +1548,18 @@ export function CanvasArea() {
         // 因为 editor.createShape() 会同步触发 store listener，
         // 如果保护机制在 .then() 中设置就太晚了
         recentlyTransitionedRef.current.add(item.id)
+        // 【关键修复】同步设置 processedItemsRef，防止重复处理
+        processedItemsRef.current.add(item.id)
         console.log('[CanvasArea] protection added BEFORE shape creation for:', item.id)
 
         syncingRef.current = true
+        // [Bug#1修复] 添加超时保护，防止 Promise 卡住导致 syncingRef 永远为 true
+        const transitionSafetyTimeout = setTimeout(() => {
+          if (syncingRef.current) {
+            console.warn('[CanvasArea] syncingRef stuck during transition, force reset for:', item.id)
+            syncingRef.current = false
+          }
+        }, 5000)
 
         // 先删除旧的 geo 矩形（释放 shapeId）
         editor.deleteShape(shapeId)
@@ -1482,29 +1580,57 @@ export function CanvasArea() {
           if (!isMounted) return
 
           if (newShapeId) {
-            processedItemsRef.current.add(item.id)
+            // processedItemsRef 已在调用前同步设置，无需重复设置
             console.log('[CanvasArea] placeholder -> image transition successful for:', item.id, 'with size:', { w: newW, h: newH })
             
-            // 1000ms 后移除保护，允许正常的尺寸同步（如用户手动调整）
-            // 延长保护时间以确保 tldraw 内部的异步更新完成
-            setTimeout(() => {
+            // 先隐藏新创建的 image shape，保持 shimmer 显示
+            editor.updateShape({ id: newShapeId, type: 'image', opacity: 0 })
+            
+            // 预加载完成后再显示
+            const preloadImg = new Image()
+            const loadTimeout = setTimeout(() => {
+              editor.updateShape({ id: newShapeId, type: 'image', opacity: 1 })
+              useAppStore.getState().updateCanvasItem(item.id, { loading: false })
               recentlyTransitionedRef.current.delete(item.id)
-              console.log('[CanvasArea] protection removed for:', item.id)
-            }, 1000)
+              console.log('[CanvasArea] protection removed for (timeout):', item.id)
+            }, 10000)
+
+            preloadImg.onload = () => {
+              clearTimeout(loadTimeout)
+              editor.updateShape({ id: newShapeId, type: 'image', opacity: 1 })
+              useAppStore.getState().updateCanvasItem(item.id, { loading: false })
+              // 1000ms 后移除保护，允许正常的尺寸同步
+              setTimeout(() => {
+                recentlyTransitionedRef.current.delete(item.id)
+                console.log('[CanvasArea] protection removed for:', item.id)
+              }, 1000)
+            }
+            preloadImg.onerror = () => {
+              clearTimeout(loadTimeout)
+              editor.updateShape({ id: newShapeId, type: 'image', opacity: 1 })
+              useAppStore.getState().updateCanvasItem(item.id, { loading: false })
+              recentlyTransitionedRef.current.delete(item.id)
+              console.log('[CanvasArea] protection removed for (error):', item.id)
+            }
+            preloadImg.src = item.url
           } else {
             console.warn('[CanvasArea] placeholder -> image transition failed for:', item.id)
-            // 失败时移除保护
+            // 失败时回滚保护标记
             recentlyTransitionedRef.current.delete(item.id)
+            processedItemsRef.current.delete(item.id)
           }
 
+          clearTimeout(transitionSafetyTimeout)
           queueMicrotask(() => {
             if (!isMounted) return
             syncingRef.current = false
           })
         }).catch((err) => {
+          clearTimeout(transitionSafetyTimeout)
           console.error('[CanvasArea] Failed to transition placeholder to image:', err)
-          // 失败时移除保护
+          // 失败时回滚保护标记
           recentlyTransitionedRef.current.delete(item.id)
+          processedItemsRef.current.delete(item.id)
           if (!isMounted) return
           syncingRef.current = false
         })
@@ -1526,17 +1652,31 @@ export function CanvasArea() {
       }
 
       if (!existingShape && !processedItemsRef.current.has(item.id)) {
+        // 【关键修复】在调用 createTldrawImageFromItem 之前同步设置 processedItemsRef
+        // 防止 sync effect 在 .then() 执行前再次运行导致无限循环
+        processedItemsRef.current.add(item.id)
+        
+        // 如果是 placeholder，记录到追踪 ref 中
+        if (item.placeholder) {
+          placeholderIdsRef.current.add(item.id)
+        }
+        
         // Create new shape
         syncingRef.current = true
+        // [Bug#1修复] 添加超时保护
+        const createSafetyTimeout = setTimeout(() => {
+          if (syncingRef.current) {
+            console.warn('[CanvasArea] syncingRef stuck during createShape, force reset for:', item.id)
+            syncingRef.current = false
+          }
+        }, 5000)
         createTldrawImageFromItem(editor, item).then((newShapeId) => {
+          clearTimeout(createSafetyTimeout)
           if (!isMounted) return  // 组件已卸载，不执行后续操作
-          if (newShapeId) {
-            processedItemsRef.current.add(item.id)
-            // 如果是 placeholder，记录到追踪 ref 中
-            if (item.placeholder) {
-              placeholderIdsRef.current.add(item.id)
-            }
-          } else {
+          if (!newShapeId) {
+            // 创建失败，回滚 processedItemsRef
+            processedItemsRef.current.delete(item.id)
+            placeholderIdsRef.current.delete(item.id)
             console.warn('[CanvasArea] Failed to create shape for item:', item.id)
           }
           // 延迟重置以避免 store listener 微任务中 syncingRef 已变 false
@@ -1545,6 +1685,10 @@ export function CanvasArea() {
             syncingRef.current = false
           })
         }).catch((err) => {
+          clearTimeout(createSafetyTimeout)
+          // 创建失败，回滚 processedItemsRef
+          processedItemsRef.current.delete(item.id)
+          placeholderIdsRef.current.delete(item.id)
           console.error('[CanvasArea] Error creating shape:', err)
           if (!isMounted) return
           syncingRef.current = false
@@ -1732,12 +1876,31 @@ export function CanvasArea() {
 
         console.log('[CanvasArea] Upload complete - storageUrl:', storageUrl?.substring(0, 60), 'falUrl:', falUrl?.substring(0, 60))
 
+        // 上传完成，进入预加载阶段（保持 shimmer）
         useAppStore.getState().updateCanvasItem(id, { 
           url: finalUrl,
           falUrl: finalFalUrl, 
           uploading: false,
-          placeholder: false
+          placeholder: false,
+          loading: true  // 保持 shimmer 直到图片完全加载
         })
+
+        // 预加载图片
+        const preloadImg = new Image()
+        const loadTimeout = setTimeout(() => {
+          // 超时 10s 也强制显示
+          useAppStore.getState().updateCanvasItem(id, { loading: false })
+        }, 10000)
+
+        preloadImg.onload = () => {
+          clearTimeout(loadTimeout)
+          useAppStore.getState().updateCanvasItem(id, { loading: false })
+        }
+        preloadImg.onerror = () => {
+          clearTimeout(loadTimeout)
+          useAppStore.getState().updateCanvasItem(id, { loading: false })
+        }
+        preloadImg.src = finalUrl
 
         // 如果 Storage 上传失败但 FAL 成功，显示警告
         if (!storageUrl && falUrl) {

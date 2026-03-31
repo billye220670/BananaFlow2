@@ -26,6 +26,7 @@ export interface CanvasItem {
   height: number
   uploading: boolean
   placeholder?: boolean // true while AI is generating
+  loading?: boolean     // true while URL is uploaded but image not fully loaded in browser
   referenceImages?: StoredRef[] // per-item reference images
   naturalWidth?: number      // 原始图片宽度
   naturalHeight?: number     // 原始图片高度

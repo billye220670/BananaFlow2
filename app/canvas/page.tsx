@@ -106,6 +106,13 @@ function CanvasPageContent() {
           const asset = assetId ? currentEditor.getAsset(assetId as Parameters<typeof currentEditor.getAsset>[0]) : null
           const src = (asset?.props as { src?: string })?.src || ''
           
+          // 先隐藏 image shape，显示 shimmer
+          currentEditor.updateShape({ 
+            id: shape.id, 
+            type: 'image', 
+            opacity: 0 
+          })
+          
           addCanvasItem({
             id: itemId,
             url: src,
@@ -117,7 +124,35 @@ function CanvasPageContent() {
             y: shape.y,
             uploading: false,
             placeholder: false,
+            loading: true,  // shimmer 直到图片加载完
           })
+          
+          // 预加载图片
+          if (src && src.startsWith('http')) {
+            const preloadImg = new Image()
+            const capturedShapeId = shape.id
+            const loadTimeout = setTimeout(() => {
+              // 超时也恢复
+              currentEditor.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
+              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+            }, 10000)
+            
+            preloadImg.onload = () => {
+              clearTimeout(loadTimeout)
+              currentEditor.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
+              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+            }
+            preloadImg.onerror = () => {
+              clearTimeout(loadTimeout)
+              currentEditor.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
+              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+            }
+            preloadImg.src = src
+          } else {
+            // 非 http URL 直接显示
+            currentEditor.updateShape({ id: shape.id, type: 'image', opacity: 1 })
+            useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+          }
         })
         
         // 恢复 lovart 自定义数据
