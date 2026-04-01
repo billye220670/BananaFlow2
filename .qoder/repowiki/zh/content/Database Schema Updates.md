@@ -17,20 +17,30 @@
 - [route.ts](file://app/api/auth/signup/route.ts)
 </cite>
 
+## 更新摘要
+**变更内容**
+- 新增项目预览图片功能，支持从快照中自动提取预览图
+- 数据库模式更新：添加preview_images JSONB列
+- 新增extractPreviewImages函数实现预览图提取逻辑
+- 更新项目API以支持预览图片的读取和写入
+
 ## 目录
 1. [简介](#简介)
 2. [项目结构概览](#项目结构概览)
 3. [核心数据库架构](#核心数据库架构)
 4. [架构总览](#架构总览)
 5. [详细组件分析](#详细组件分析)
-6. [依赖关系分析](#依赖关系分析)
-7. [性能考虑](#性能考虑)
-8. [故障排除指南](#故障排除指南)
-9. [结论](#结论)
+6. [预览图片功能](#预览图片功能)
+7. [依赖关系分析](#依赖关系分析)
+8. [性能考虑](#性能考虑)
+9. [故障排除指南](#故障排除指南)
+10. [结论](#结论)
 
 ## 简介
 
 Loveart 是一个基于 Next.js 和 Supabase 的数字艺术创作平台。本项目专注于数据库架构的现代化升级，特别是从传统的 JSONB 快照存储迁移到基于 Supabase Storage 的文件存储系统。本次更新实现了更高效的数据存储、更好的可扩展性和更强的系统稳定性。
+
+**更新** 新增了项目预览图片功能，支持从快照中自动提取前4张最大面积的图片作为项目预览图，提升用户体验和项目展示效果。
 
 ## 项目结构概览
 
@@ -101,6 +111,7 @@ uuid user_id FK
 varchar name
 text thumbnail_url
 text snapshot_url
+jsonb preview_images
 timestamptz created_at
 timestamptz updated_at
 }
@@ -116,18 +127,21 @@ PROJECTS ||--o{ PROJECT_SNAPSHOTS : "包含"
 ```
 
 **图表来源**
-- [schema.sql:1-51](file://supabase/schema.sql#L1-L51)
+- [schema.sql:1-55](file://supabase/schema.sql#L1-L55)
 
 ### 关键特性
 
 1. **用户管理系统**: 支持手机号登录和传统密码登录
 2. **项目存储**: 采用混合存储策略（新版本使用 Storage，旧版本兼容 JSONB）
-3. **验证码系统**: 集成短信验证功能
-4. **权限控制**: 基于用户 ID 的严格访问控制
+3. **预览图片功能**: 自动从快照中提取前4张最大面积的图片作为项目预览
+4. **验证码系统**: 集成短信验证功能
+5. **权限控制**: 基于用户 ID 的严格访问控制
+
+**更新** 新增了preview_images JSONB列，用于存储项目预览图片URL数组，默认为空数组。
 
 **章节来源**
-- [schema.sql:1-51](file://supabase/schema.sql#L1-L51)
-- [types.ts:51-85](file://lib/types.ts#L51-L85)
+- [schema.sql:1-55](file://supabase/schema.sql#L1-L55)
+- [types.ts:60-67](file://lib/types.ts#L60-L67)
 
 ## 架构总览
 
@@ -148,6 +162,7 @@ subgraph "业务逻辑层"
 AuthService[认证服务]
 ProjectService[项目服务]
 StorageService[存储服务]
+PreviewExtractor[预览图片提取器]
 end
 subgraph "数据持久层"
 SupabaseDB[Supabase 数据库]
@@ -159,10 +174,12 @@ React --> ProjectRoutes
 React --> UploadRoutes
 AuthRoutes --> AuthService
 ProjectRoutes --> ProjectService
+ProjectRoutes --> PreviewExtractor
 UploadRoutes --> StorageService
 AuthService --> SupabaseDB
 ProjectService --> SupabaseDB
 ProjectService --> StorageBucket
+PreviewExtractor --> ProjectService
 StorageService --> StorageBucket
 ```
 
@@ -219,7 +236,8 @@ UploadAsset --> UpdateAssetURL[更新资产 URL]
 SkipUpload --> ContinueProcess[继续处理]
 UpdateAssetURL --> UploadSnapshot[上传快照到 Storage]
 ContinueProcess --> UploadSnapshot
-UploadSnapshot --> UpdateProject[更新项目记录]
+UploadSnapshot --> ExtractPreviewImages[提取预览图片]
+ExtractPreviewImages --> UpdateProject[更新项目记录]
 UpdateProject --> ReturnSuccess[返回成功]
 ReturnError --> End([结束])
 ReturnSuccess --> End
@@ -272,6 +290,76 @@ StorageService --> SupabaseAdmin : 依赖
 - [project-service.ts:1-225](file://lib/project-service.ts#L1-L225)
 - [storage-service.ts:1-324](file://lib/storage-service.ts#L1-L324)
 
+## 预览图片功能
+
+### 功能概述
+
+预览图片功能允许系统从项目的快照中自动提取前4张最大面积的图片作为项目预览图，提升用户界面的视觉效果和项目展示能力。
+
+### 技术实现
+
+```mermaid
+flowchart TD
+ExtractStart([开始提取预览图片]) --> ParseSnapshot[解析快照结构]
+ParseSnapshot --> FindImageShapes[查找图片形状]
+FindImageShapes --> ExtractAssetInfo[提取资产信息]
+ExtractAssetInfo --> FilterValidURLs{过滤有效URL}
+FilterValidURLs --> |有效| CalculateArea[计算图片面积]
+FilterValidURLs --> |无效| SkipAsset[跳过资产]
+CalculateArea --> SortByArea[按面积降序排序]
+SortByArea --> RemoveDuplicates[去重处理]
+RemoveDuplicates --> LimitTo4[限制为前4张]
+LimitTo4 --> ReturnResult[返回预览图片数组]
+SkipAsset --> FindImageShapes
+```
+
+**图表来源**
+- [route.ts:17-67](file://app/api/projects/[id]/save/route.ts#L17-L67)
+
+### 数据流图
+
+```mermaid
+sequenceDiagram
+participant Client as 客户端
+participant SaveAPI as 保存 API
+participant Extractor as 预览提取器
+participant Storage as 存储服务
+participant DB as 数据库
+Client->>SaveAPI : POST 保存项目
+SaveAPI->>Extractor : 提取预览图片
+Extractor->>Extractor : 遍历快照中的图片形状
+Extractor->>Extractor : 计算图片面积并去重
+Extractor-->>SaveAPI : 返回前4张预览图片
+SaveAPI->>Storage : 上传快照文件
+Storage-->>SaveAPI : 返回快照路径
+SaveAPI->>DB : 更新项目记录含预览图片
+DB-->>SaveAPI : 更新成功
+SaveAPI-->>Client : 保存成功
+```
+
+**图表来源**
+- [route.ts:207-212](file://app/api/projects/[id]/save/route.ts#L207-L212)
+- [route.ts:32-33](file://app/api/projects/route.ts#L32-L33)
+
+### 数据结构
+
+预览图片功能使用以下数据结构：
+
+- **存储格式**: JSONB数组，存储图片URL字符串
+- **提取规则**: 
+  1. 从快照的store中查找所有图片形状
+  2. 计算每张图片的面积（宽×高）
+  3. 按面积降序排列
+  4. 去除重复URL，保留面积最大的版本
+  5. 限制为前4张图片
+- **默认值**: 空数组'[]'
+
+**章节来源**
+- [schema.sql:35](file://supabase/schema.sql#L35)
+- [route.ts:17-67](file://app/api/projects/[id]/save/route.ts#L17-L67)
+- [route.ts:32-33](file://app/api/projects/route.ts#L32-L33)
+- [types.ts:63-64](file://lib/types.ts#L63-L64)
+
 ## 依赖关系分析
 
 系统各组件之间的依赖关系清晰明确，遵循单一职责原则：
@@ -288,6 +376,7 @@ AuthModule[认证模块]
 ProjectModule[项目模块]
 StorageModule[存储模块]
 SMSModule[短信模块]
+PreviewModule[预览模块]
 end
 subgraph "工具模块"
 Utils[工具函数]
@@ -296,12 +385,13 @@ end
 SupabaseJS --> AuthModule
 SupabaseJS --> ProjectModule
 SupabaseJS --> StorageModule
+SupabaseJS --> PreviewModule
 JWTLib --> AuthModule
 Bcrypt --> AuthModule
 AuthModule --> Utils
 ProjectModule --> Utils
 StorageModule --> Utils
-SMSModule --> Utils
+PreviewModule --> Utils
 Types --> AllModules[所有模块]
 ```
 
@@ -321,6 +411,7 @@ Types --> AllModules[所有模块]
 2. **索引优化**: 为常用查询字段建立复合索引
 3. **缓存策略**: 利用 Supabase 的内置缓存机制
 4. **异步处理**: 大文件上传采用异步处理模式
+5. **预览图片缓存**: 预览图片URL可以被浏览器缓存，减少重复加载
 
 ### 查询性能优化
 
@@ -336,6 +427,8 @@ LimitResults --> ReturnResults[返回结果]
 CreateIndex --> MonitorPerformance[监控性能]
 MonitorPerformance --> OptimizeQuery
 ```
+
+**更新** 预览图片查询优化：由于preview_images是JSONB类型，建议在高频查询场景下考虑添加GIN索引以提升查询性能。
 
 **章节来源**
 - [schema.sql:21-24](file://supabase/schema.sql#L21-L24)
@@ -357,17 +450,25 @@ MonitorPerformance --> OptimizeQuery
    - 验证 JWT 密钥配置
    - 检查用户会话状态
 
+4. **预览图片提取失败**
+   - 检查快照数据结构是否符合预期
+   - 验证图片形状的assetId格式
+   - 确认URL格式为http/https协议
+
+**更新** 新增预览图片功能相关的故障排除指导。
+
 **章节来源**
 - [supabase-server.ts:10-28](file://lib/supabase-server.ts#L10-L28)
 - [storage-service.ts:1-17](file://lib/storage-service.ts#L1-L17)
 
 ## 结论
 
-本次数据库架构更新成功实现了从传统 JSONB 存储到现代文件存储系统的迁移。新架构具有以下优势：
+本次数据库架构更新成功实现了从传统 JSONB 存储到现代文件存储系统的迁移，并新增了预览图片功能。新架构具有以下优势：
 
 1. **更好的可扩展性**: 支持更大规模的数据存储需求
 2. **更高的性能**: 优化的存储结构和查询机制
 3. **更强的安全性**: 分离的存储权限管理和访问控制
 4. **更易维护**: 清晰的架构设计和模块化组织
+5. **增强的用户体验**: 自动化的预览图片提取功能，提升项目展示效果
 
-通过这次更新，Loveart 平台为未来的功能扩展和技术演进奠定了坚实的基础。
+通过这次更新，Loveart 平台为未来的功能扩展和技术演进奠定了坚实的基础。预览图片功能的引入不仅提升了用户界面的视觉效果，也为项目管理和分享提供了更好的支持。

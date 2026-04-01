@@ -4,10 +4,65 @@ import { Suspense, useEffect, useRef } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { loadSnapshot, getSnapshot } from 'tldraw'
 import { CanvasArea } from '@/components/canvas/CanvasArea'
+import { LOADABLE_IMAGE_TYPE } from '@/components/canvas/LoadableImageShape'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { useAppStore } from '@/lib/store'
-import type { Editor } from 'tldraw'
-import { loadProject, createProject, setupAutoSave, saveProjectSnapshot, updateProjectName } from '@/lib/project-service'
+import type { Editor, TLShapeId } from 'tldraw'
+import { loadProject, createProject, setupAutoSave, saveProjectSnapshot, updateProjectName, uploadCanvasAsset } from '@/lib/project-service'
+
+/**
+ * 异步迁移 fal.media URL 到 Supabase Storage
+ * 后台执行，不阻塞项目恢复流程
+ */
+async function migrateFalMediaUrl(
+  editor: Editor,
+  shapeId: TLShapeId,
+  itemId: string,
+  falUrl: string,
+  projectId: string
+): Promise<void> {
+  try {
+    console.log('[Migration] Starting fal.media URL migration:', falUrl)
+    
+    // 下载 fal.media 图片
+    const response = await fetch(falUrl)
+    if (!response.ok) {
+      throw new Error(`Failed to fetch fal.media image: ${response.status}`)
+    }
+    const blob = await response.blob()
+    
+    // 提取扩展名
+    const ext = falUrl.split('.').pop()?.split('?')[0] || 'png'
+    const file = new File([blob], `migrated.${ext}`, { type: blob.type })
+    
+    // 上传到 Supabase Storage
+    const assetId = `${projectId}/${itemId}`
+    const storageUrl = await uploadCanvasAsset(file, assetId)
+    
+    console.log('[Migration] Uploaded to Supabase:', storageUrl)
+    
+    // 检查 shape 是否仍然存在（用户可能已删除）
+    const shape = editor.getShape(shapeId)
+    if (!shape) {
+      console.warn('[Migration] Shape no longer exists:', shapeId)
+      return
+    }
+    
+    // 更新 shape 的 props.url
+    editor.updateShape({
+      id: shapeId,
+      type: 'loadable-image',
+      props: { url: storageUrl },
+    })
+    
+    // 更新 canvasItem 的 url
+    useAppStore.getState().updateCanvasItem(itemId, { url: storageUrl })
+    
+    console.log('[Migration] Successfully migrated fal.media URL for shape:', shapeId)
+  } catch (err) {
+    console.error('[Migration] Failed to migrate fal.media URL:', falUrl, err)
+  }
+}
 
 // 内部组件，处理 searchParams 和项目加载逻辑
 function CanvasPageContent() {
@@ -116,62 +171,81 @@ function CanvasPageContent() {
         }
         // 从 tldraw shapes 派生 canvasItems（单向读取，tldraw 是唯一数据源）
         const allShapes = currentEditor.getCurrentPageShapes()
-        const imageShapes = allShapes.filter((s): s is typeof s & { type: 'image' } => s.type === 'image')
         
-        imageShapes.forEach((shape, index) => {
+        // === 处理新项目（loadable-image shapes） ===
+        const loadableShapes = allShapes.filter(s => s.type === LOADABLE_IMAGE_TYPE)
+        loadableShapes.forEach((shape, index) => {
+          const props = shape.props as { w?: number; h?: number; url?: string; status?: string }
           const itemId = shape.id.replace('shape:', '')
-          const assetId = (shape.props as { assetId?: string })?.assetId
-          const asset = assetId ? currentEditor.getAsset(assetId as Parameters<typeof currentEditor.getAsset>[0]) : null
-          const src = (asset?.props as { src?: string })?.src || ''
-          
-          // 先隐藏 image shape，显示 shimmer
-          currentEditor.updateShape({ 
-            id: shape.id, 
-            type: 'image', 
-            opacity: 0 
-          })
+          const src = props.url || ''
+          const isLoading = props.status === 'loading'
           
           addCanvasItem({
             id: itemId,
             url: src,
-            falUrl: src.startsWith('http') ? src : null,
             name: (shape.meta as { name?: string })?.name || `Image_${index + 1}`,
-            width: (shape.props as { w?: number })?.w || 512,
-            height: (shape.props as { h?: number })?.h || 512,
+            width: props.w || 512,
+            height: props.h || 512,
             x: shape.x,
             y: shape.y,
-            uploading: false,
-            placeholder: false,
-            loading: true,  // shimmer 直到图片加载完
+            uploading: isLoading,
+            placeholder: isLoading,
+            loading: isLoading,
           })
           
-          // 预加载图片
-          if (src && src.startsWith('http')) {
-            const preloadImg = new Image()
-            const capturedShapeId = shape.id
-            const loadTimeout = setTimeout(() => {
-              // 超时也恢复
-              currentEditor.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
-              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
-            }, 10000)
-            
-            preloadImg.onload = () => {
-              clearTimeout(loadTimeout)
-              currentEditor.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
-              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
-            }
-            preloadImg.onerror = () => {
-              clearTimeout(loadTimeout)
-              currentEditor.updateShape({ id: capturedShapeId, type: 'image', opacity: 1 })
-              useAppStore.getState().updateCanvasItem(itemId, { loading: false })
-            }
-            preloadImg.src = src
-          } else {
-            // 非 http URL 直接显示
-            currentEditor.updateShape({ id: shape.id, type: 'image', opacity: 1 })
-            useAppStore.getState().updateCanvasItem(itemId, { loading: false })
+          // 异步迁移 fal.media URL 到 Supabase
+          if (src.includes('fal.media')) {
+            migrateFalMediaUrl(currentEditor, shape.id, itemId, src, actualPid)
           }
         })
+        
+        // === 处理旧项目（image shapes → 迁移为 loadable-image） ===
+        const imageShapes = allShapes.filter((s): s is typeof s & { type: 'image' } => s.type === 'image')
+        if (imageShapes.length > 0) {
+          imageShapes.forEach((shape, index) => {
+            const imgProps = shape.props as { w?: number; h?: number; assetId?: string }
+            const itemId = shape.id.replace('shape:', '')
+            const assetId = imgProps.assetId
+            const asset = assetId ? currentEditor.getAsset(assetId as Parameters<typeof currentEditor.getAsset>[0]) : null
+            const src = (asset?.props as { src?: string })?.src || ''
+            
+            // 删除旧 image shape
+            currentEditor.deleteShape(shape.id)
+            
+            // 创建新 loadable-image shape（同位置同尺寸）
+            currentEditor.createShape({
+              id: shape.id,  // 保持相同 ID
+              type: LOADABLE_IMAGE_TYPE,
+              x: shape.x,
+              y: shape.y,
+              props: {
+                w: imgProps.w || 512,
+                h: imgProps.h || 512,
+                status: 'ready',  // 旧项目的图片 URL 已在 asset 中，直接设为 ready
+                url: src,
+              },
+            })
+            
+            // 创建 canvasItem
+            addCanvasItem({
+              id: itemId,
+              url: src,
+              name: (shape.meta as { name?: string })?.name || `Image_${index + 1}`,
+              width: imgProps.w || 512,
+              height: imgProps.h || 512,
+              x: shape.x,
+              y: shape.y,
+              uploading: false,
+              placeholder: false,
+              loading: false,
+            })
+            
+            // 异步迁移 fal.media URL 到 Supabase
+            if (src.includes('fal.media')) {
+              migrateFalMediaUrl(currentEditor, shape.id, itemId, src, actualPid)
+            }
+          })
+        }
         
         // 恢复 lovart 自定义数据
         if (project.snapshot?.lovart) {

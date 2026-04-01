@@ -13,7 +13,7 @@ import { GeoShapeGeoStyle } from '@tldraw/tlschema'
 import { toast } from 'sonner'
 import { nanoid } from 'nanoid'
 import { validateFile } from '@/lib/validate'
-import { uploadFile } from '@/lib/fal'
+import { uploadCanvasAsset } from '@/lib/project-service'
 
 // ── 类型定义 ─────────────────────────────────────────────────────────────────
 
@@ -304,18 +304,19 @@ export function Toolbar() {
     const id = nanoid()
     const localUrl = URL.createObjectURL(file)
     
+    // 创建 canvasItem，走统一的 loadable-image 流程
     addCanvasItem({
       id,
-      url: localUrl,
-      falUrl: null,
+      url: '',              // 不传 blob URL，由 shape 内部管理
       x,
       y,
-      width: 0,
+      width: 0,             // 初始为 0，sync effect 会用默认值 400
       height: 0,
       uploading: true,
+      placeholder: true,    // 走 loadable-image 的 loading 状态
     })
     
-    // 加载图片获取尺寸
+    // 加载图片获取尺寸（使用 blob URL）
     const img = document.createElement('img')
     img.onload = () => {
       const maxW = 480
@@ -329,14 +330,25 @@ export function Toolbar() {
         naturalHeight: img.naturalHeight,
         fileName: file.name,
       })
+      // 获取到尺寸后释放 blob URL
+      URL.revokeObjectURL(localUrl)
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(localUrl)
     }
     img.src = localUrl
     
     try {
-      const falUrl = await uploadFile(file)
-      useAppStore.getState().updateCanvasItem(id, { falUrl, uploading: false })
+      const assetId = `toolbar-upload-${id}`
+      const storageUrl = await uploadCanvasAsset(file, assetId)
+      // 上传完成，触发 loading → ready 过渡
+      useAppStore.getState().updateCanvasItem(id, { 
+        url: storageUrl,
+        uploading: false, 
+        placeholder: false,
+      })
     } catch {
-      toast.error('上传失败，请检查 FAL_KEY 并重启服务')
+      toast.error('上传失败，请检查网络连接')
       useAppStore.getState().updateCanvasItem(id, { uploading: false })
     }
   }, [addCanvasItem, getNewItemPosition])

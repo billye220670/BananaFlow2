@@ -18,7 +18,8 @@ import {
 import { nanoid } from 'nanoid'
 import { CustomTooltip } from '@/components/ui/tooltip'
 import { useAppStore } from '@/lib/store'
-import { generateImage, getImageDimensions, uploadFile } from '@/lib/fal'
+import { generateImage, getImageDimensions } from '@/lib/fal'
+import { uploadCanvasAsset } from '@/lib/project-service'
 import type { CanvasItem } from '@/lib/types'
 import { MessageHistory } from './MessageHistory'
 
@@ -258,42 +259,39 @@ export function ChatPanel() {
     }
 
     // 1. 收集参考图 URL
-    // blob URL 需要先上传到 FAL storage 获取公开 URL，因为 FAL API 只接受公开可访问的 HTTPS URL
+    // blob/data URL 需要先上传到 Supabase Storage 获取公开 URL，因为 FAL API 只接受公开可访问的 HTTPS URL
     const referenceUrls: string[] = []
     for (const badge of displayBadges) {
-      // 优先使用 store 中最新的 CanvasItem（确保 falUrl 是最新的）
-      // displayBadges 可能来自 lockedItems（快照），其 falUrl 可能是旧的 null
+      // 优先使用 store 中最新的 CanvasItem
       const item = currentCanvasItems.find(i => i.id === badge.id) ?? badge
-      
-      // 如果已有 falUrl（之前上传过），直接使用
-      if (item.falUrl) {
-        referenceUrls.push(item.falUrl)
-        continue
-      }
       
       const url = item.url
       if (!url) continue
       
-      // 如果是 blob URL，需要上传到 FAL storage
+      // 如果已是公开 URL，直接使用
+      if (url.startsWith('https://') || url.startsWith('http://')) {
+        referenceUrls.push(url)
+        continue
+      }
+      
+      // 如果是 blob URL，需要上传到 Supabase Storage
       if (url.startsWith('blob:')) {
         try {
-          console.log('[handleSend] Uploading blob URL to FAL storage:', url.substring(0, 50))
+          console.log('[handleSend] Uploading blob URL to Supabase Storage:', url.substring(0, 50))
           const response = await fetch(url)
           const blob = await response.blob()
           const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
-          const falStorageUrl = await uploadFile(file)
+          const assetId = `chat-ref-${item.id}`
+          const storageUrl = await uploadCanvasAsset(file, assetId)
           
-          // 更新 item 的 falUrl，避免下次重复上传
-          updateCanvasItem(item.id, { falUrl: falStorageUrl })
-          referenceUrls.push(falStorageUrl)
-          console.log('[handleSend] Blob uploaded successfully:', falStorageUrl.substring(0, 80))
+          // 更新 item 的 url，避免下次重复上传
+          updateCanvasItem(item.id, { url: storageUrl })
+          referenceUrls.push(storageUrl)
+          console.log('[handleSend] Blob uploaded successfully:', storageUrl.substring(0, 80))
         } catch (error) {
           console.error('[handleSend] Failed to upload blob URL:', url.substring(0, 50), error)
           // 跳过该项，不阻断整个流程
         }
-      } else if (url.startsWith('https://') || url.startsWith('http://')) {
-        // 已经是公开 URL，直接使用
-        referenceUrls.push(url)
       } else if (url.startsWith('data:')) {
         // data: URL（如 tldraw asset）需要转换为 Blob 再上传
         try {
@@ -301,12 +299,13 @@ export function ChatPanel() {
           const response = await fetch(url)
           const blob = await response.blob()
           const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
-          const falStorageUrl = await uploadFile(file)
+          const assetId = `chat-ref-${item.id}`
+          const storageUrl = await uploadCanvasAsset(file, assetId)
           
-          // 更新 item 的 falUrl，避免下次重复上传
-          updateCanvasItem(item.id, { falUrl: falStorageUrl })
-          referenceUrls.push(falStorageUrl)
-          console.log('[handleSend] Data URL uploaded successfully:', falStorageUrl.substring(0, 80))
+          // 更新 item 的 url，避免下次重复上传
+          updateCanvasItem(item.id, { url: storageUrl })
+          referenceUrls.push(storageUrl)
+          console.log('[handleSend] Data URL uploaded successfully:', storageUrl.substring(0, 80))
         } catch (error) {
           console.error('[handleSend] Failed to upload data URL:', error)
         }
@@ -327,33 +326,32 @@ export function ChatPanel() {
         if (addedItemIds.has(item.id)) continue
         addedItemIds.add(item.id)
         
-        // 优先使用 falUrl
-        if (item.falUrl) {
-          referenceUrls.push(item.falUrl)
-          continue
-        }
-        
+        // 优先使用已上传的 URL
         const url = item.url
         if (!url) continue
         
-        // 如果是 blob URL，需要上传到 FAL storage
+        if (url.startsWith('https://') || url.startsWith('http://')) {
+          referenceUrls.push(url)
+          continue
+        }
+        
+        // 如果是 blob URL，需要上传到 Supabase Storage
         if (url.startsWith('blob:')) {
           try {
-            console.log('[handleSend] Uploading marker image blob URL to FAL storage:', url.substring(0, 50))
+            console.log('[handleSend] Uploading marker image blob URL to Supabase Storage:', url.substring(0, 50))
             const response = await fetch(url)
             const blob = await response.blob()
             const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
-            const falStorageUrl = await uploadFile(file)
+            const assetId = `chat-marker-${item.id}`
+            const storageUrl = await uploadCanvasAsset(file, assetId)
             
-            // 更新 item 的 falUrl，避免下次重复上传
-            updateCanvasItem(item.id, { falUrl: falStorageUrl })
-            referenceUrls.push(falStorageUrl)
-            console.log('[handleSend] Marker image blob uploaded successfully:', falStorageUrl.substring(0, 80))
+            // 更新 item 的 url，避免下次重复上传
+            updateCanvasItem(item.id, { url: storageUrl })
+            referenceUrls.push(storageUrl)
+            console.log('[handleSend] Marker image blob uploaded successfully:', storageUrl.substring(0, 80))
           } catch (error) {
             console.error('[handleSend] Failed to upload marker image blob URL:', url.substring(0, 50), error)
           }
-        } else if (url.startsWith('https://') || url.startsWith('http://')) {
-          referenceUrls.push(url)
         } else if (url.startsWith('data:')) {
           // data: URL（如 tldraw asset）需要转换为 Blob 再上传
           try {
@@ -361,12 +359,13 @@ export function ChatPanel() {
             const response = await fetch(url)
             const blob = await response.blob()
             const file = new File([blob], item.fileName || 'image.png', { type: blob.type || 'image/png' })
-            const falStorageUrl = await uploadFile(file)
+            const assetId = `chat-marker-${item.id}`
+            const storageUrl = await uploadCanvasAsset(file, assetId)
             
-            // 更新 item 的 falUrl，避免下次重复上传
-            updateCanvasItem(item.id, { falUrl: falStorageUrl })
-            referenceUrls.push(falStorageUrl)
-            console.log('[handleSend] Marker image data URL uploaded successfully:', falStorageUrl.substring(0, 80))
+            // 更新 item 的 url，避免下次重复上传
+            updateCanvasItem(item.id, { url: storageUrl })
+            referenceUrls.push(storageUrl)
+            console.log('[handleSend] Marker image data URL uploaded successfully:', storageUrl.substring(0, 80))
           } catch (error) {
             console.error('[handleSend] Failed to upload marker image data URL:', error)
           }
@@ -387,7 +386,6 @@ export function ChatPanel() {
     console.log('[handleSend] displayBadges:', displayBadges.map(item => ({
       id: item.id,
       url: item.url?.substring(0, 80),
-      falUrl: item.falUrl?.substring(0, 80),
       fileName: item.fileName,
     })))
     console.log('[handleSend] referenceUrls:', referenceUrls)
@@ -503,7 +501,6 @@ export function ChatPanel() {
     addCanvasItem({
       id: itemId,
       url: '',
-      falUrl: null,
       x: cx,
       y: cy,
       width: displayW,
@@ -530,11 +527,27 @@ export function ChatPanel() {
       const finalWidth = result.width || displayW
       const finalHeight = result.height || displayH
 
+      // 下载 AI 生成的图片并上传到 Supabase
+      let storageUrl = resultUrl
+      try {
+        const response = await fetch(resultUrl)
+        if (response.ok) {
+          const blob = await response.blob()
+          const ext = resultUrl.split('.').pop()?.split('?')[0] || 'png'
+          const file = new File([blob], `ai-generated.${ext}`, { type: blob.type || 'image/png' })
+          const assetId = `chat-ai-${itemId}`
+          storageUrl = await uploadCanvasAsset(file, assetId)
+          console.log('[ChatPanel] AI image uploaded to Supabase:', storageUrl.substring(0, 80))
+        }
+      } catch (err) {
+        console.error('[ChatPanel] Failed to upload AI image to Supabase:', err)
+        // Fallback: 使用原始 fal.media URL
+      }
+
       // 成功：更新画布项和消息
       // 保持占位图的原始显示尺寸（displayW/displayH），FAL返回的实际尺寸只存入naturalWidth/naturalHeight
       updateCanvasItem(itemId, {
-        url: resultUrl,
-        falUrl: resultUrl,
+        url: storageUrl,
         placeholder: false,
         width: displayW,
         height: displayH,

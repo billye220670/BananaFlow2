@@ -3,7 +3,8 @@
 import { useState, useRef, useEffect, useCallback } from "react"
 import { useAppStore, canvasItemIdToShapeId } from "@/lib/store"
 import { validateFile } from "@/lib/validate"
-import { uploadFile, editImage, generateImage } from "@/lib/fal"
+import { editImage, generateImage } from "@/lib/fal"
+import { uploadCanvasAsset } from "@/lib/project-service"
 import { toast } from "sonner"
 import { ImagePlus, X, Loader2 } from "lucide-react"
 import { nanoid } from "nanoid"
@@ -129,14 +130,15 @@ export function InlineEditPanel() {
       addItemReference(selectedItem.id, {
         id,
         localUrl,
-        falUrl: null,
+        url: null,
         name: file.name,
         uploading: true,
       })
 
       try {
-        const falUrl = await uploadFile(file)
-        updateItemReference(selectedItem.id, id, { falUrl, uploading: false })
+        const assetId = `ref-${selectedItem.id}-${id}`
+        const storageUrl = await uploadCanvasAsset(file, assetId)
+        updateItemReference(selectedItem.id, id, { url: storageUrl, uploading: false })
       } catch {
         toast.error("上传失败")
         removeItemReference(selectedItem.id, id)
@@ -186,7 +188,6 @@ export function InlineEditPanel() {
     addCanvasItem({
       id: phId,
       url: "",
-      falUrl: null,
       x: phX,
       y: phY,
       width: phW,
@@ -197,8 +198,8 @@ export function InlineEditPanel() {
 
     try {
       // Image order: main image + reference images (in thumbnail order)
-      const refUrls = refs.map((r) => r.falUrl!).filter(Boolean)
-      const targetUrl = selectedItem.falUrl ?? selectedItem.url
+      const refUrls = refs.map((r) => r.url!).filter(Boolean)
+      const targetUrl = selectedItem.url
 
       let resultUrl: string
       let naturalWidth: number | undefined
@@ -215,6 +216,24 @@ export function InlineEditPanel() {
         naturalHeight = result.height
       }
 
+      // 下载 AI 生成的图片并上传到 Supabase
+      const uploadAIImage = async (falMediaUrl: string): Promise<string> => {
+        try {
+          const response = await fetch(falMediaUrl)
+          if (!response.ok) throw new Error('Failed to fetch AI image')
+          const blob = await response.blob()
+          const ext = falMediaUrl.split('.').pop()?.split('?')[0] || 'png'
+          const file = new File([blob], `ai-generated.${ext}`, { type: blob.type || 'image/png' })
+          const assetId = `ai-${phId}`
+          const storageUrl = await uploadCanvasAsset(file, assetId)
+          return storageUrl
+        } catch (err) {
+          console.error('[InlineEditPanel] Failed to upload AI image to Supabase:', err)
+          // Fallback: 使用原始 fal.media URL（不推荐，但避免完全失败）
+          return falMediaUrl
+        }
+      }
+
       // 如果已有 FAL 返回的尺寸，直接使用
       if (naturalWidth && naturalHeight) {
         const maxW = 480
@@ -224,9 +243,11 @@ export function InlineEditPanel() {
         const fileName = prompt.length > 0 
           ? `AI-${prompt.slice(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.png`
           : "AI Generated.png"
+        
+        // 上传到 Supabase
+        const storageUrl = await uploadAIImage(resultUrl)
         updateCanvasItem(phId, { 
-          url: resultUrl, 
-          falUrl: resultUrl, 
+          url: storageUrl, 
           placeholder: false,
           width,
           height,
@@ -237,7 +258,7 @@ export function InlineEditPanel() {
       } else {
         // Load image to get natural dimensions before updating CanvasItem
         const img = new Image()
-        img.onload = () => {
+        img.onload = async () => {
           const maxW = 480
           const scale = Math.min(maxW / img.naturalWidth, maxW / img.naturalHeight, 1)
           const width = Math.round(img.naturalWidth * scale)
@@ -246,9 +267,11 @@ export function InlineEditPanel() {
           const fileName = prompt.length > 0 
             ? `AI-${prompt.slice(0, 20).replace(/[^\w\u4e00-\u9fa5]/g, '_')}.png`
             : "AI Generated.png"
+          
+          // 上传到 Supabase
+          const storageUrl = await uploadAIImage(resultUrl)
           updateCanvasItem(phId, { 
-            url: resultUrl, 
-            falUrl: resultUrl, 
+            url: storageUrl, 
             placeholder: false,
             width,
             height,
@@ -257,11 +280,11 @@ export function InlineEditPanel() {
             fileName,
           })
         }
-        img.onerror = () => {
+        img.onerror = async () => {
           // Fallback: update without dimensions if image fails to load
+          const storageUrl = await uploadAIImage(resultUrl)
           updateCanvasItem(phId, { 
-            url: resultUrl, 
-            falUrl: resultUrl, 
+            url: storageUrl, 
             placeholder: false,
             fileName: "AI Generated.png",
           })

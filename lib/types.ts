@@ -1,7 +1,7 @@
 export interface StoredRef {
   id: string
   localUrl: string       // object URL for display (revoked on cleanup)
-  falUrl: string | null  // FAL storage URL; null until upload completes
+  url: string | null     // Supabase Storage URL; null until upload completes
   name: string
   uploading: boolean
 }
@@ -17,8 +17,7 @@ export interface Message {
 
 export interface CanvasItem {
   id: string
-  url: string           // display URL (blob or FAL CDN)
-  falUrl: string | null // FAL CDN URL; null until upload completes
+  url: string           // display URL (Supabase Storage URL or blob)
   name?: string         // display name for the item
   x: number
   y: number

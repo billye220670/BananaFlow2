@@ -13,22 +13,52 @@ interface SaveRequestBody {
 
 /**
  * 提取预览图 URL（按画布面积降序，取前4张）
+ * 支持两种 shape 类型：
+ * - loadable-image（新项目）：URL 在 shape.props.url
+ * - image（旧项目兼容）：URL 在 asset.props.src
  */
 function extractPreviewImages(snapshot: ExtendedSnapshot): string[] {
   try {
     const store = snapshot?.tldraw?.document?.store
-    if (!store) return []
+    if (!store) {
+      return []
+    }
 
-    // 1. 找到所有 image shapes 及其对应的 asset URL
+    // 1. 找到所有图片 shapes 及其对应的 URL
     const imageShapes: { url: string; area: number }[] = []
     
     for (const [, value] of Object.entries(store)) {
-      const record = value as { typeName?: string; type?: string; props?: { assetId?: string; w?: number; h?: number } }
-      if (record?.typeName === 'shape' && record?.type === 'image') {
+      const record = value as {
+        typeName?: string
+        type?: string
+        props?: {
+          assetId?: string
+          w?: number
+          h?: number
+          url?: string
+          status?: string
+        }
+      }
+      
+      if (record?.typeName !== 'shape') continue
+      
+      const w = record?.props?.w ?? 0
+      const h = record?.props?.h ?? 0
+      const area = w * h
+      
+      // 处理 loadable-image shape（新项目）
+      if (record?.type === 'loadable-image') {
+        const url = record?.props?.url
+        const status = record?.props?.status
+        
+        // 仅取 status === 'ready' 且 URL 以 http 开头的 shape
+        if (status === 'ready' && url && (url.startsWith('http://') || url.startsWith('https://'))) {
+          imageShapes.push({ url, area })
+        }
+      }
+      // 处理 image shape（旧项目兼容）
+      else if (record?.type === 'image') {
         const assetId = record?.props?.assetId
-        const w = record?.props?.w ?? 0
-        const h = record?.props?.h ?? 0
-        const area = w * h
         
         if (assetId) {
           // 查找对应的 asset
